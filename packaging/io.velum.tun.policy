@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN" "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>Velum</vendor>
+  <action id="io.velum.tun">
+    <description>Start the Velum system tunnel</description>
+    <description xml:lang="ru">Запустить системный туннель Velum</description>
+    <message>Authentication is required to route network traffic through Velum.</message>
+    <message xml:lang="ru">Подтвердите права для маршрутизации трафика через Velum.</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/velum/velum-tun</annotate>
+  </action>
+</policyconfig>

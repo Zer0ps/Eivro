@@ -1,0 +1,268 @@
+[
+  {
+    "remarks": "Test 1",
+    "log": {
+      "access": "/tmp/should-not-be-used",
+      "loglevel": "debug"
+    },
+    "outbounds": [
+      {
+        "tag": "synthetic-node",
+        "protocol": "vless",
+        "settings": {
+          "vnext": [
+            {
+              "address": "edge.example",
+              "port": 8443,
+              "users": [
+                {
+                  "id": "a3ba7b44-3275-42e7-9a54-30aa2bde0437",
+                  "encryption": "none",
+                  "flow": "xtls-rprx-vision"
+                }
+              ]
+            }
+          ]
+        },
+        "streamSettings": {
+          "network": "tcp",
+          "tcpSettings": {},
+          "security": "reality",
+          "realitySettings": {
+            "serverName": "edge.example",
+            "publicKey": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+            "shortId": "aabbccdd",
+            "fingerprint": "firefox"
+          }
+        }
+      },
+      {
+        "protocol": "freedom",
+        "tag": "direct"
+      },
+      {
+        "protocol": "blackhole",
+        "tag": "block"
+      }
+    ]
+  },
+  {
+    "remarks": "Test 2",
+    "log": {
+      "access": "/tmp/should-not-be-used",
+      "loglevel": "debug"
+    },
+    "outbounds": [
+      {
+        "tag": "synthetic-node",
+        "protocol": "hysteria",
+        "settings": {
+          "address": "edge.example",
+          "port": 8449,
+          "version": 2
+        },
+        "streamSettings": {
+          "network": "hysteria",
+          "hysteriaSettings": {
+            "version": 2,
+            "auth": "a3ba7b44-3275-42e7-9a54-30aa2bde0437"
+          },
+          "security": "tls",
+          "tlsSettings": {
+            "serverName": "edge.example",
+            "fingerprint": "firefox",
+            "alpn": [
+              "h3"
+            ]
+          },
+          "finalmask": {
+            "quicParams": {
+              "debug": false,
+              "congestion": "bbr"
+            }
+          }
+        }
+      },
+      {
+        "protocol": "freedom",
+        "tag": "direct"
+      },
+      {
+        "protocol": "blackhole",
+        "tag": "block"
+      }
+    ]
+  },
+  {
+    "remarks": "Test 3",
+    "log": {
+      "access": "/tmp/should-not-be-used",
+      "loglevel": "debug"
+    },
+    "outbounds": [
+      {
+        "tag": "synthetic-node",
+        "protocol": "shadowsocks",
+        "settings": {
+          "servers": [
+            {
+              "address": "edge.example",
+              "port": 2030,
+              "password": "synthetic-password",
+              "method": "chacha20-ietf-poly1305",
+              "uot": false,
+              "UoTVersion": 1
+            }
+          ]
+        },
+        "streamSettings": {
+          "network": "tcp",
+          "tcpSettings": {},
+          "security": "none"
+        }
+      },
+      {
+        "protocol": "freedom",
+        "tag": "direct"
+      },
+      {
+        "protocol": "blackhole",
+        "tag": "block"
+      }
+    ]
+  },
+  {
+    "remarks": "Test 4",
+    "log": {
+      "access": "/tmp/should-not-be-used",
+      "loglevel": "debug"
+    },
+    "outbounds": [
+      {
+        "tag": "synthetic-node",
+        "protocol": "vless",
+        "settings": {
+          "vnext": [
+            {
+              "address": "edge.example",
+              "port": 10443,
+              "users": [
+                {
+                  "id": "a3ba7b44-3275-42e7-9a54-30aa2bde0437",
+                  "encryption": "none",
+                  "flow": ""
+                }
+              ]
+            }
+          ]
+        },
+        "streamSettings": {
+          "network": "xhttp",
+          "xhttpSettings": {
+            "mode": "stream-one",
+            "host": "",
+            "path": "/fixture",
+            "extra": {
+              "xmux": {
+                "cMaxReuseTimes": "256-512",
+                "maxConcurrency": "16-32",
+                "maxConnections": 0,
+                "hKeepAlivePeriod": 0,
+                "hMaxReusableSecs": "900-1500"
+              },
+              "xPaddingBytes": "50-150"
+            }
+          },
+          "security": "reality",
+          "realitySettings": {
+            "serverName": "edge.example",
+            "publicKey": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+            "shortId": "aabbccdd",
+            "fingerprint": "firefox"
+          }
+        }
+      },
+      {
+        "protocol": "freedom",
+        "tag": "direct"
+      },
+      {
+        "protocol": "blackhole",
+        "tag": "block"
+      }
+    ]
+  },
+  {
+    "remarks": "Test 5",
+    "log": {
+      "access": "/tmp/should-not-be-used",
+      "loglevel": "debug"
+    },
+    "outbounds": [
+      {
+        "tag": "synthetic-node",
+        "protocol": "vless",
+        "settings": {
+          "vnext": [
+            {
+              "address": "edge.example",
+              "port": 443,
+              "users": [
+                {
+                  "id": "a3ba7b44-3275-42e7-9a54-30aa2bde0437",
+                  "encryption": "none",
+                  "flow": ""
+                }
+              ]
+            }
+          ]
+        },
+        "streamSettings": {
+          "network": "xhttp",
+          "xhttpSettings": {
+            "mode": "packet-up",
+            "host": "edge.example",
+            "path": "/fixture",
+            "extra": {
+              "seqKey": "",
+              "sessionKey": "",
+              "noSSEHeader": false,
+              "xPaddingKey": "",
+              "seqPlacement": "",
+              "uplinkDataKey": "",
+              "xPaddingBytes": "0-0",
+              "xPaddingHeader": "",
+              "xPaddingMethod": "",
+              "uplinkChunkSize": 0,
+              "sessionPlacement": "",
+              "uplinkHTTPMethod": "GET",
+              "xPaddingObfsMode": false,
+              "xPaddingPlacement": "",
+              "scMaxBufferedPosts": 30,
+              "scMaxEachPostBytes": "1000000",
+              "uplinkDataPlacement": "",
+              "scStreamUpServerSecs": "20-80"
+            }
+          },
+          "security": "tls",
+          "tlsSettings": {
+            "serverName": "edge.example",
+            "fingerprint": "chrome",
+            "alpn": [
+              "h2",
+              "http/1.1"
+            ]
+          }
+        }
+      },
+      {
+        "protocol": "freedom",
+        "tag": "direct"
+      },
+      {
+        "protocol": "blackhole",
+        "tag": "block"
+      }
+    ]
+  }
+]

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Velum
+Comment=Клиент прокси без логов
+Exec=/home/fruja/Desktop/Velum/start.sh
+Icon=/home/fruja/Desktop/Velum/assets/io.velum.Client.svg
+Terminal=false
+Categories=Network;

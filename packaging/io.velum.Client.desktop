@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Velum
+Comment=Private proxy client
+Comment[ru]=Клиент прокси без логов
+Exec=velum
+Icon=io.velum.Client
+Terminal=false
+Categories=Network;Security;
+StartupWMClass=io.velum.Client
+Keywords=VPN;Proxy;VLESS;Shadowsocks;

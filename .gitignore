@@ -1,0 +1,15 @@
+/target/
+/.tools/
+/dist/
+/vendor/sing-box
+/vendor/*.tar.gz
+/work/
+*.log
+
+/vendor/xray
+/vendor/*.zip
+__pycache__/
+*.pyc
+/.agents/
+/.codex/
+/.aws/
