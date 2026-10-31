@@ -2,7 +2,7 @@
 Type=Application
 Name=Eivro
 Comment=Клиент прокси без логов
-Exec=/home/fruja/Desktop/Eivro/start.sh
-Icon=/home/fruja/Desktop/Eivro/assets/io.eivro.Client.svg
+Exec=eivro
+Icon=io.eivro.Client
 Terminal=false
 Categories=Network;

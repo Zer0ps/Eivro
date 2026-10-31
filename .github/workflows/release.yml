@@ -193,7 +193,7 @@ jobs:
           pattern: eivro-macos-*
           path: dist
           merge-multiple: true
-      - name: Create a draft release after every check passed
+      - name: Create and publish release after every check passed
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -203,3 +203,4 @@ jobs:
             --title "Eivro $GITHUB_REF_NAME · macOS preview" \
             --notes-file docs/RELEASE.md \
             dist/*.deb dist/*.rpm dist/*.tar.gz dist/*.pkg dist/*.dmg dist/SHA256SUMS*
+          gh release edit "$GITHUB_REF_NAME" --draft=false
