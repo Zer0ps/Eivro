@@ -67,7 +67,9 @@ def main():
     copy(ROOT / 'packaging/macos/io.eivro.tun.plist', stage / 'Library/LaunchDaemons/io.eivro.tun.plist')
     # Ad-hoc signing supplies bundle integrity for local testing. It is not
     # Developer ID signing or notarization and must never be advertised as such.
-    for binary in sorted((app / 'MacOS').iterdir()) + sorted(helper.iterdir()):
+    # Sign nested executables before the enclosing app. Signing the main
+    # executable first makes codesign validate the still-unsigned siblings.
+    for binary in [app / 'MacOS/sing-box', app / 'MacOS/xray'] + sorted(helper.iterdir()):
         run('codesign', '--force', '--sign', '-', '--options', 'runtime', binary)
     run('codesign', '--force', '--sign', '-', '--options', 'runtime', app.parent)
     run('codesign', '--verify', '--deep', '--strict', app.parent)

@@ -69,6 +69,10 @@ def main():
     port = free_port()
     request = {'uri': 'ss://chacha20-ietf-poly1305:synthetic@127.0.0.1:9', 'bypass': [], 'port': port}
     with connect(version) as sock:
+        send(sock, {'command': 'interfaces'})
+        interfaces = receive(sock)
+        assert interfaces['event'] == 'interfaces'
+        assert any(link['up'] for link in interfaces['interfaces']), 'No usable native interfaces'
         for mode in ('tun', 'proxy'):
             send(sock, {'command': 'start', 'request': request, 'mode': mode, 'authorization': [0] * 32})
             assert receive(sock)['event'] == 'denied'

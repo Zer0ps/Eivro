@@ -61,7 +61,7 @@ char *eivro_interfaces(void) {
                 links[name] = [@{
                     @"name" : name,
                     @"index" : @(if_nametoindex(item->ifa_name)),
-                    @"up" : @((item->ifa_flags & IFF_UP) != 0),
+                    @"up" : @((bool)((item->ifa_flags & IFF_UP) != 0)),
                     @"dns" : [NSMutableArray array]
                 } mutableCopy];
         }
@@ -182,7 +182,7 @@ char *eivro_settings_plan(uint16_t port, bool tun) {
                 @"type" : (__bridge NSString *)type,
                 @"before" : original,
                 @"applied" : applied,
-                @"before_enabled" : @(SCNetworkProtocolGetEnabled(protocol)),
+                @"before_enabled" : @((bool)SCNetworkProtocolGetEnabled(protocol)),
                 @"applied_enabled" : @YES
             }];
             CFRelease(protocol);
