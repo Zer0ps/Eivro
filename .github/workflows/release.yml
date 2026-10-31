@@ -136,8 +136,8 @@ jobs:
       - name: Remove test installation
         if: always()
         run: |
-          if [ -f /Applications/Eivro.app/Contents/Resources/uninstall.sh ]; then
-            sudo /Applications/Eivro.app/Contents/Resources/uninstall.sh
+          if [ -f /Library/PrivilegedHelperTools/io.eivro/eivro-tun ]; then
+            sudo packaging/macos/uninstall.sh
           fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

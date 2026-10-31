@@ -96,7 +96,17 @@ def main():
     dist = ROOT / 'dist'
     dist.mkdir(exist_ok=True)
     package = dist / f'Eivro-{VERSION}-macos-{machine}.pkg'
-    run('pkgbuild', '--root', stage, '--identifier', 'io.eivro.pkg', '--version', VERSION,
+    components = work / 'components.plist'
+    run('pkgbuild', '--analyze', '--root', stage, components)
+    descriptions = plistlib.loads(components.read_bytes())
+    if len(descriptions) != 1 or descriptions[0]['RootRelativeBundlePath'] != 'Applications/Eivro.app':
+        raise SystemExit('Unexpected installer component layout')
+    descriptions[0]['BundleIsRelocatable'] = False
+    descriptions[0]['BundleHasStrictIdentifier'] = True
+    descriptions[0]['BundleOverwriteAction'] = 'upgrade'
+    components.write_bytes(plistlib.dumps(descriptions))
+    run('pkgbuild', '--root', stage, '--component-plist', components,
+        '--identifier', 'io.eivro.pkg', '--version', VERSION,
         '--install-location', '/', '--ownership', 'recommended', '--scripts', ROOT / 'packaging/macos/scripts', package)
     image_root = work / 'image'
     image_root.mkdir()

@@ -1,4 +1,5 @@
 #!/bin/sh
 set -eu
 if [ "${3:-/}" != / ]; then exit 1; fi
+[ -x /Applications/Eivro.app/Contents/MacOS/eivro ]
 /bin/launchctl bootstrap system /Library/LaunchDaemons/io.eivro.tun.plist
