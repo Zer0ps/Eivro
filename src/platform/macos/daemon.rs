@@ -646,7 +646,34 @@ mod tests {
             ),
             secondary: None,
         };
-        process::ready(endpoint.primary.as_mut().unwrap(), server_port).unwrap();
+        // This endpoint speaks Shadowsocks, whereas process::ready validates
+        // our client's SOCKS5 listener. Only await TCP readiness for the fixture.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            assert!(
+                endpoint
+                    .primary
+                    .as_mut()
+                    .unwrap()
+                    .try_wait()
+                    .unwrap()
+                    .is_none(),
+                "Synthetic Shadowsocks endpoint exited"
+            );
+            if std::net::TcpStream::connect_timeout(
+                &std::net::SocketAddr::from(([127, 0, 0, 1], server_port)),
+                Duration::from_millis(50),
+            )
+            .is_ok()
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Synthetic Shadowsocks endpoint did not listen"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
         let request = ConnectRequest {
             uri: format!("ss://chacha20-ietf-poly1305:ci-loopback-only@127.0.0.1:{server_port}"),
             bypass: vec![],

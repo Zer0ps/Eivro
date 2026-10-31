@@ -93,46 +93,48 @@ def main():
     wait_closed(port)
     # Exercise the actual installed CGL/AppKit application with empty, private
     # settings. No VPN is started and no user configuration is read.
-    with tempfile.TemporaryDirectory(prefix='eivro-macos-smoke-') as config:
-        environment = dict(os.environ, XDG_CONFIG_HOME=config)
-        gui = subprocess.Popen([str(app / 'MacOS/eivro')], env=environment,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        try:
-            time.sleep(5)
-            assert gui.poll() is None, 'Installed GUI exited during native startup'
-            screenshots = Path('work/macos-smoke')
-            screenshots.mkdir(parents=True, exist_ok=True)
-            capture = subprocess.run(['/usr/sbin/screencapture', '-x',
-                                      str(screenshots / 'desktop.png')],
-                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                     timeout=10)
-            if capture.returncode:
-                print('Native startup passed; screenshot permission unavailable')
-            def usage():
-                fields = subprocess.check_output(['/bin/ps', '-p', str(gui.pid),
-                    '-o', 'time=', '-o', 'rss='], text=True).split()
-                seconds = sum(float(part) * 60 ** index
-                              for index, part in enumerate(reversed(fields[0].split(':'))))
-                return seconds, int(fields[1])
-            first_cpu, _ = usage()
-            started = time.monotonic()
-            time.sleep(10)
-            assert gui.poll() is None, 'Installed GUI exited while idle'
-            last_cpu, rss_kib = usage()
-            elapsed = time.monotonic() - started
-            report = {'scope': 'empty disconnected GUI, visible window, CI runner',
-                      'sample_seconds': round(elapsed, 2),
-                      'cpu_percent_one_core': round(100 * (last_cpu - first_cpu) / elapsed, 3),
-                      'rss_mib': round(rss_kib / 1024, 2)}
-            (screenshots / 'idle.json').write_text(json.dumps(report, indent=2) + '\n')
-            print('Native idle sample:', json.dumps(report))
-        finally:
-            gui.terminate()
+    for background in (False, True):
+        with tempfile.TemporaryDirectory(prefix='eivro-macos-smoke-') as config:
+            environment = dict(os.environ, XDG_CONFIG_HOME=config)
+            gui = subprocess.Popen([str(app / 'MacOS/eivro')] + (['--background'] if background else []), env=environment,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             try:
-                gui.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                gui.kill()
-                gui.wait()
+                time.sleep(5)
+                assert gui.poll() is None, 'Installed GUI exited during native startup'
+                screenshots = Path('work/macos-smoke')
+                screenshots.mkdir(parents=True, exist_ok=True)
+                if not background:
+                    capture = subprocess.run(['/usr/sbin/screencapture', '-x',
+                                              str(screenshots / 'desktop.png')],
+                                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                             timeout=10)
+                    if capture.returncode:
+                        print('Native startup passed; screenshot permission unavailable')
+                def usage():
+                    fields = subprocess.check_output(['/bin/ps', '-p', str(gui.pid),
+                        '-o', 'time=', '-o', 'rss='], text=True).split()
+                    seconds = sum(float(part) * 60 ** index
+                                  for index, part in enumerate(reversed(fields[0].split(':'))))
+                    return seconds, int(fields[1])
+                first_cpu, _ = usage()
+                started = time.monotonic()
+                time.sleep(10)
+                assert gui.poll() is None, 'Installed GUI exited while idle'
+                last_cpu, rss_kib = usage()
+                elapsed = time.monotonic() - started
+                report = {'scope': 'empty disconnected GUI, CI runner', 'background': background,
+                          'sample_seconds': round(elapsed, 2),
+                          'cpu_percent_one_core': round(100 * (last_cpu - first_cpu) / elapsed, 3),
+                          'rss_mib': round(rss_kib / 1024, 2)}
+                (screenshots / ('idle-background.json' if background else 'idle-visible.json')).write_text(json.dumps(report, indent=2) + '\n')
+                print('Native idle sample:', json.dumps(report))
+            finally:
+                gui.terminate()
+                try:
+                    gui.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    gui.kill()
+                    gui.wait()
     print('PASS: installed metadata, launchd IPC, rejected authorization, Local start/stop/reconnect/owner exit')
 
 if __name__ == '__main__':
