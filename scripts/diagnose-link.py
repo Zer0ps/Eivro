@@ -55,7 +55,7 @@ def parse_link(text):
     if "concurrency" in q and not -(2**31) <= int(q["concurrency"]) < 2**31:
         raise DiagnosticError("Invalid concurrency.")
     if q.get("spx", "/") not in ("", "/"):
-        raise DiagnosticError("Custom spiderX is unsupported by Velum.")
+        raise DiagnosticError("Custom spiderX is unsupported by Eivro.")
     pbk = q.get("pbk", "")
     if not re.fullmatch(r"[A-Za-z0-9_-]{43}", pbk) or len(base64.urlsafe_b64decode(pbk + "=")) != 32:
         raise DiagnosticError("Invalid Reality public key.")
@@ -100,7 +100,7 @@ def ipv4(host, port):
 def main_uplink():
     result = subprocess.run(["ip", "-j", "-4", "route", "show", "table", "main", "default"], env=ENV, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=3, check=True)
     routes = json.loads(result.stdout)
-    candidates = [r for r in routes if isinstance(r.get("dev"), str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,15}", r["dev"]) and r["dev"] not in ("lo", "velum0") and not (Path("/sys/class/net") / r["dev"] / "tun_flags").exists()]
+    candidates = [r for r in routes if isinstance(r.get("dev"), str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,15}", r["dev"]) and r["dev"] not in ("lo", "eivro0") and not (Path("/sys/class/net") / r["dev"] / "tun_flags").exists()]
     if not candidates:
         raise DiagnosticError("No non-TUN IPv4 default route was found.")
     interface = min(candidates, key=lambda r: r.get("metric", 0))["dev"]
@@ -188,9 +188,9 @@ def main():
     else:
         route = subprocess.run(["ip", "-j", "-4", "route", "get", address], env=ENV, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=3, check=True)
         device = json.loads(route.stdout)[0].get("dev", "")
-        if device == "velum0" or (Path("/sys/class/net") / device / "tun_flags").exists():
+        if device == "eivro0" or (Path("/sys/class/net") / device / "tun_flags").exists():
             print("WARNING: server route uses an existing TUN. This tests a VPN chain; use --uplink to test the main uplink.", flush=True)
-    core = Path("/usr/libexec/velum/xray")
+    core = Path("/usr/libexec/eivro/xray")
     if not core.is_file():
         core = Path(__file__).resolve().parents[1] / "vendor/xray"
     version = subprocess.run([str(core), "version"], env=ENV, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5)
@@ -252,7 +252,7 @@ def main():
         elif not any(label.startswith("HTTPS") for label in successes):
             print("HTTP data passes through VLESS; HTTPS fails. Check Vision and server egress.")
         else:
-            print("HTTPS passed through Xray. Compare Velum's selected core and settings.")
+            print("HTTPS passed through Xray. Compare Eivro's selected core and settings.")
         return 0 if {"HTTPS, IPv4", "HTTPS, domain"} <= successes else 1
     finally:
         stop(child)

@@ -382,7 +382,7 @@ impl Helper {
             if fds[0].revents != 0 {
                 let lines = self.read_lines()?;
                 if lines.iter().any(|s| s == "STOP_ERROR" || s == "ERROR") {
-                    return Err("Не удалось снять защиту TUN. Завершите Velum и используйте восстановление из README.".into());
+                    return Err("Не удалось снять защиту TUN. Завершите Eivro и используйте восстановление из README.".into());
                 }
                 if lines.iter().any(|s| s == "STOPPED") {
                     return Ok(());
@@ -426,6 +426,7 @@ mod tests {
             helper: Mutex::new(Some(Helper::from_child(child).unwrap())),
         };
         let request = ConnectRequest {
+            connections: vec![],
             uri: "synthetic".into(),
             bypass: vec![],
             policies: vec![],
@@ -458,6 +459,7 @@ mod tests {
             helper: Mutex::new(Some(helper)),
         };
         let req = ConnectRequest {
+            connections: vec![],
             uri: "synthetic".into(),
             bypass: vec![],
             port: 2080,

@@ -1,4 +1,10 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
+use eivro::{
+    config::{ConnectRequest, Mode, generate},
+    import::{EngineKind, import_text, parse_uri},
+    routing::Rule,
+    storage::{self, Settings},
+};
 use serde_json::json;
 use std::{
     fs,
@@ -10,12 +16,6 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
 };
-use velum::{
-    config::{ConnectRequest, Mode, generate},
-    import::{EngineKind, import_text, parse_uri},
-    routing::Rule,
-    storage::{self, Settings},
-};
 
 const UUID: &str = "a3ba7b44-3275-42e7-9a54-30aa2bde0437";
 fn vless() -> String {
@@ -26,6 +26,7 @@ fn core() -> PathBuf {
 }
 fn request(uri: String) -> ConnectRequest {
     ConnectRequest {
+        connections: vec![],
         probe_port: None,
         policies: vec![],
         kill_switch: false,
@@ -42,7 +43,7 @@ fn request(uri: String) -> ConnectRequest {
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 fn tmp() -> PathBuf {
     let p = std::env::temp_dir().join(format!(
-        "velum-test-{}-{}",
+        "eivro-test-{}-{}",
         std::process::id(),
         COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
@@ -200,7 +201,7 @@ fn core_accepts_every_supported_protocol_and_both_modes() {
 #[test]
 fn settings_are_private_atomic_and_do_not_follow_symlinks() {
     let dir = tmp();
-    let path = dir.join("velum/settings.json");
+    let path = dir.join("eivro/settings.json");
     storage::save(&path, &Settings::default()).unwrap();
     assert_eq!(
         fs::metadata(&path).unwrap().permissions().mode() & 0o777,
@@ -215,7 +216,7 @@ fn settings_are_private_atomic_and_do_not_follow_symlinks() {
         0o700
     );
     let loaded = storage::load(&path).unwrap();
-    assert_eq!(loaded.schema, 3);
+    assert_eq!(loaded.schema, 4);
     fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
     assert!(storage::load(&path).is_err());
     fs::remove_file(&path).unwrap();
@@ -230,7 +231,7 @@ fn settings_are_private_atomic_and_do_not_follow_symlinks() {
 struct Guard(Child);
 impl Drop for Guard {
     fn drop(&mut self) {
-        velum::process::terminate(&mut self.0);
+        eivro::process::terminate(&mut self.0);
     }
 }
 fn port() -> u16 {
@@ -296,7 +297,7 @@ fn real_proxy_transport_routing_and_nologs() {
             let mut buf = [0; 2048];
             let _ = s.read(&mut buf);
             let _ = s.write_all(
-                b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nvelum",
+                b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\neivro",
             );
         }
     });
@@ -311,6 +312,7 @@ fn real_proxy_transport_routing_and_nologs() {
         STANDARD.encode("chacha20-ietf-poly1305:test-secret")
     );
     let req = ConnectRequest {
+        connections: vec![],
         probe_port: None,
         policies: vec![],
         kill_switch: false,
@@ -324,31 +326,31 @@ fn real_proxy_transport_routing_and_nologs() {
     config["dns"] = json!({"servers":[{"type":"hosts","tag":"hosts","predefined":{"a.example.test":"127.0.0.1","example.test":"127.0.0.1","badexample.test":"127.0.0.1"}}],"final":"hosts"});
     config["route"]["default_domain_resolver"] = json!("hosts");
     let mut client = spawn(config, &dir);
-    velum::process::ready(&mut client.0, proxy_port).unwrap();
+    eivro::process::ready(&mut client.0, proxy_port).unwrap();
     // First use the encrypted transport, then stop the upstream to distinguish routes.
     let mut s = socks(proxy_port, "example.test", http_port).unwrap();
     s.write_all(b"GET / HTTP/1.1\r\nHost: example.test\r\n\r\n")
         .unwrap();
     let mut response = String::new();
     s.read_to_string(&mut response).unwrap();
-    assert!(response.ends_with("velum"));
-    velum::process::terminate(&mut remote.0);
+    assert!(response.ends_with("eivro"));
+    eivro::process::terminate(&mut remote.0);
     let mut s = socks(proxy_port, "a.example.test", http_port).unwrap();
     s.write_all(b"GET / HTTP/1.1\r\nHost: a.example.test\r\n\r\n")
         .unwrap();
     let mut response = String::new();
     s.read_to_string(&mut response).unwrap();
-    assert!(response.ends_with("velum"));
+    assert!(response.ends_with("eivro"));
     // SOCKS may acknowledge before dialing; either rejection or failed data is correct.
     for host in ["example.test", "badexample.test"] {
         if let Ok(mut s) = socks(proxy_port, host, http_port) {
             let _ = s.write_all(format!("GET / HTTP/1.1\r\nHost: {host}\r\n\r\n").as_bytes());
             let mut data = String::new();
             let _ = s.read_to_string(&mut data);
-            assert!(!data.contains("velum"));
+            assert!(!data.contains("eivro"));
         }
     }
-    velum::process::terminate(&mut client.0);
+    eivro::process::terminate(&mut client.0);
     for child in [&mut remote.0, &mut client.0] {
         let mut out = Vec::new();
         child.stdout.take().unwrap().read_to_end(&mut out).unwrap();
@@ -369,6 +371,7 @@ fn real_proxy_transport_routing_and_nologs() {
 fn supervisor_handles_cancel_and_occupied_port() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let req = ConnectRequest {
+        connections: vec![],
         probe_port: None,
         policies: vec![],
         kill_switch: false,
@@ -378,12 +381,13 @@ fn supervisor_handles_cancel_and_occupied_port() {
         port: listener.local_addr().unwrap().port(),
     };
     let (_session, rx) =
-        velum::process::Session::start(req, Mode::Local, std::sync::Arc::new(|| {})).unwrap();
+        eivro::process::Session::start(req, Mode::Local, std::sync::Arc::new(|| {})).unwrap();
     assert!(matches!(
         rx.recv_timeout(Duration::from_secs(3)).unwrap(),
-        velum::process::Event::Failed(_)
+        eivro::process::Event::Failed(_)
     ));
     let req = ConnectRequest {
+        connections: vec![],
         probe_port: None,
         policies: vec![],
         kill_switch: false,
@@ -393,12 +397,12 @@ fn supervisor_handles_cancel_and_occupied_port() {
         port: port(),
     };
     let (mut session, rx) =
-        velum::process::Session::start(req, Mode::Local, std::sync::Arc::new(|| {})).unwrap();
+        eivro::process::Session::start(req, Mode::Local, std::sync::Arc::new(|| {})).unwrap();
     let event = rx.recv_timeout(Duration::from_secs(8)).unwrap();
-    assert!(matches!(event, velum::process::Event::Running), "{event:?}");
+    assert!(matches!(event, eivro::process::Event::Running), "{event:?}");
     session.stop();
     assert!(matches!(
         rx.recv_timeout(Duration::from_secs(5)).unwrap(),
-        velum::process::Event::Stopped
+        eivro::process::Event::Stopped
     ));
 }

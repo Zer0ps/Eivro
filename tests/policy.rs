@@ -1,15 +1,15 @@
-use serde_json::json;
-use velum::{
+use eivro::{
     config::{self, ConnectRequest, Mode},
     policy::{Action, PolicyRule, RoutingProfile, Target},
     storage::Settings,
 };
+use serde_json::json;
 
 #[test]
 fn schema_two_migrates_rules_without_changing_subscriptions_or_preferences() {
     let mut settings:Settings=serde_json::from_value(json!({"schema":2,"bypass":["*.example.test","10.0.0.0/8"],"theme":"light","mode":"tun","accent":[1,2,3]})).unwrap();
     settings.migrate().unwrap();
-    assert_eq!(settings.schema, 3);
+    assert_eq!(settings.schema, 4);
     assert_eq!(settings.routing_profiles.len(), 1);
     assert_eq!(settings.routing_profiles[0].rules.len(), 2);
     assert_eq!(settings.accent, [1, 2, 3]);
@@ -69,6 +69,7 @@ fn routing_priorities_applications_and_guard_config_are_accepted_by_core() {
         action: Action::Direct,
     });
     let request = ConnectRequest {
+        connections: vec![],
         uri: "ss://chacha20-ietf-poly1305:synthetic@127.0.0.1:443".into(),
         bypass: vec![],
         port: 2080,
@@ -87,10 +88,10 @@ fn routing_priorities_applications_and_guard_config_are_accepted_by_core() {
         config["route"]["rules"][5]["process_path"],
         json!(["/usr/bin/firefox"])
     );
-    assert_eq!(config["outbounds"][0]["routing_mark"], velum::guard::MARK);
+    assert_eq!(config["outbounds"][0]["routing_mark"], eivro::guard::MARK);
     assert_eq!(
         config["dns"]["servers"][0]["routing_mark"],
-        velum::guard::MARK
+        eivro::guard::MARK
     );
     assert_eq!(config["log"]["disabled"], true);
     use std::{

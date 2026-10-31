@@ -1,6 +1,6 @@
+use eivro::{import::parse_uri, subscription::import_bytes};
 use serde_json::json;
 use std::io::{Cursor, Write};
-use velum::{import::parse_uri, subscription::import_bytes};
 
 fn xray() -> serde_json::Value {
     json!({"remarks":"Test endpoint","log":{"loglevel":"debug","access":"/tmp/not-allowed"},"routing":{"rules":[{"outboundTag":"direct"}]},"outbounds":[{"protocol":"vless","tag":"proxy","settings":{"vnext":[{"address":"example.com","port":443,"users":[{"id":"a3ba7b44-3275-42e7-9a54-30aa2bde0437","encryption":"none","flow":""}]}]},"streamSettings":{"network":"tcp","security":"tls","tlsSettings":{"serverName":"example.com","allowInsecure":false}}},{"protocol":"freedom","tag":"direct"}]})
@@ -30,12 +30,13 @@ fn xray_and_singbox_endpoints_are_imported_without_provider_policies() {
     let parsed = parse_uri(&profiles[1].uri).unwrap();
     assert_eq!(parsed.outbound["password"], "test:p@ss/word");
     for p in profiles {
-        let c = velum::config::generate(
-            &velum::config::ConnectRequest {
+        let c = eivro::config::generate(
+            &eivro::config::ConnectRequest {
+                connections: vec![],
                 probe_port: None,
                 policies: vec![],
                 kill_switch: false,
-                bridge_port: if parse_uri(&p.uri).unwrap().engine == velum::import::EngineKind::Xray
+                bridge_port: if parse_uri(&p.uri).unwrap().engine == eivro::import::EngineKind::Xray
                 {
                     Some(2081)
                 } else {
@@ -45,7 +46,7 @@ fn xray_and_singbox_endpoints_are_imported_without_provider_policies() {
                 bypass: vec![],
                 port: 2080,
             },
-            velum::config::Mode::Local,
+            eivro::config::Mode::Local,
         )
         .unwrap();
         assert_eq!(c["log"], json!({"disabled":true}));
@@ -104,7 +105,7 @@ fn archive_wrapped_config_errors_do_not_drop_servers() {
         STANDARD.encode(STANDARD.encode(invalid)),
         "\u{feff}#profile-title: Provider\n{invalid json".into(),
         STANDARD.encode("#profile-title: Provider\n{invalid json"),
-        "velum-xray://invalid".into(),
+        "eivro-xray://invalid".into(),
     ];
     for name in ["servers.txt", "servers"] {
         for payload in &payloads {
@@ -197,7 +198,7 @@ fn archive_wrapped_configs_import_and_readme_metadata_is_ignored() {
         assert_eq!(profiles.len(), 1);
         assert_eq!(profiles[0].uri, uri);
     }
-    let native = velum::xray::profile(&xray()["outbounds"][0]).unwrap();
+    let native = eivro::xray::profile(&xray()["outbounds"][0]).unwrap();
     let archive = zip(&[("native.txt", native.uri.as_bytes().to_vec())]);
     assert_eq!(import_bytes(&archive).unwrap()[0].uri, native.uri);
     let archive = zip(&[
@@ -214,7 +215,7 @@ fn archive_wrapped_configs_import_and_readme_metadata_is_ignored() {
         ("EMPTY.txt", Vec::new()),
         ("NOTES", b"#profile-title: Documentation".to_vec()),
     ]);
-    let (profiles, metadata) = velum::subscription::import_document(&archive).unwrap();
+    let (profiles, metadata) = eivro::subscription::import_document(&archive).unwrap();
     assert_eq!(profiles.len(), 1);
     assert!(metadata.title.is_empty());
 }
@@ -223,7 +224,7 @@ fn archive_wrapped_configs_import_and_readme_metadata_is_ignored() {
 fn archives_enforce_paths_sizes_depth_and_file_count() {
     let data = serde_json::to_vec(&xray()).unwrap();
     assert!(import_bytes(&zip(&[("../../profile.json", data.clone())])).is_err());
-    assert!(import_bytes(&zip(&[("profile.json", vec![b' '; velum::MAX_IMPORT + 1])])).is_err());
+    assert!(import_bytes(&zip(&[("profile.json", vec![b' '; eivro::MAX_IMPORT + 1])])).is_err());
     let many: Vec<_> = (0..33)
         .map(|i| (format!("{i}.json"), data.clone()))
         .collect();

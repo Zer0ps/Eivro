@@ -1,4 +1,9 @@
 //! Loopback-only Xray transport regressions; no TUN, DNS, or user profiles.
+use eivro::{
+    config::{ConnectRequest, Mode},
+    process::{self, Event, Session},
+    xray,
+};
 use serde_json::{Value, json};
 use std::{
     io::{Read, Write},
@@ -7,11 +12,6 @@ use std::{
     sync::Arc,
     thread,
     time::{Duration, Instant},
-};
-use velum::{
-    config::{ConnectRequest, Mode},
-    process::{self, Event, Session},
-    xray,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(5);
@@ -142,7 +142,7 @@ fn vless_xhttp_stream_one_and_packet_up_transfer_data() {
         let transport = json!({
             "network": "xhttp",
             "security": "none",
-            "xhttpSettings": {"path": "/velum-test", "mode": mode}
+            "xhttpSettings": {"path": "/eivro-test", "mode": mode}
         });
         let log = json!({"access": "none", "error": "none", "loglevel": "none", "dnsLog": false});
         let server = start(
@@ -162,7 +162,7 @@ fn vless_xhttp_stream_one_and_packet_up_transfer_data() {
             server_reservation,
         );
         // Xray permits unencrypted VLESS on loopback. This synthetic transport
-        // test bypasses Velum's parser, which still requires TLS/Reality.
+        // test bypasses Eivro's parser, which still requires TLS/Reality.
         let client = start(
             xray::config(
                 json!({
@@ -199,7 +199,7 @@ fn vless_xhttp_stream_one_and_packet_up_transfer_data() {
         let mut received = vec![0; request.len()];
         upstream.read_exact(&mut received).unwrap();
         assert_eq!(received, request, "{mode}");
-        let body = format!("velum-xhttp-{mode}");
+        let body = format!("eivro-xhttp-{mode}");
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
@@ -218,7 +218,7 @@ fn vless_xhttp_stream_one_and_packet_up_transfer_data() {
 }
 
 #[test]
-fn tcp_reality_links_transfer_data_through_the_velum_session() {
+fn tcp_reality_links_transfer_data_through_the_eivro_session() {
     verify_version();
     let keys = output(&["x25519"]);
     let key = |prefix: &str| {
@@ -261,7 +261,7 @@ fn tcp_reality_links_transfer_data_through_the_velum_session() {
                     "listen":"127.0.0.1", "port":remote_port, "protocol":"vless",
                     "settings":{"clients":[{"id":UUID,"flow":flow}],"decryption":"none"},
                     "streamSettings":{"network":"tcp","security":"reality","realitySettings":{
-                        "target":format!("127.0.0.1:{tls_port}"),"serverNames":["cover.velum.test"],
+                        "target":format!("127.0.0.1:{tls_port}"),"serverNames":["cover.eivro.test"],
                         "privateKey":private,"shortIds":["1234567890abcdef"],"show":false
                     }}
                 }],
@@ -272,11 +272,12 @@ fn tcp_reality_links_transfer_data_through_the_velum_session() {
             remote_reservation,
         );
         let uri = format!(
-            "vless://{UUID}@127.0.0.1:{remote_port}?security=reality&pbk={public}&sid=1234567890abcdef&sni=cover.velum.test&fp=chrome&flow={flow}&spx=%2F"
+            "vless://{UUID}@127.0.0.1:{remote_port}?security=reality&pbk={public}&sid=1234567890abcdef&sni=cover.eivro.test&fp=chrome&flow={flow}&spx=%2F"
         );
         drop(local_reservation);
         let (session, events) = Session::start(
             ConnectRequest {
+                connections: vec![],
                 uri,
                 port: local_port,
                 bridge_port: None,

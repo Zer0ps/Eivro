@@ -20,6 +20,17 @@ pub enum Theme {
     Light,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Colorway {
+    #[default]
+    Graphite,
+    Sage,
+    Sand,
+    Ocean,
+    Plum,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
@@ -35,12 +46,15 @@ pub struct Settings {
     pub bypass: Vec<String>,
     pub routing_profiles: Vec<crate::policy::RoutingProfile>,
     pub selected_routing: usize,
+    pub connections: Vec<crate::network::Connection>,
     pub reconnect: bool,
     pub close_to_tray: bool,
     pub autoconnect: bool,
     pub kill_switch: bool,
     pub theme: Theme,
     pub accent: [u8; 3],
+    pub colorway: Colorway,
+    pub reduced_motion: bool,
     pub mode: Mode,
     pub port: u16,
 }
@@ -48,7 +62,8 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            schema: 3,
+            schema: 4,
+            connections: Vec::new(),
             routing_profiles: vec![Default::default()],
             selected_routing: 0,
             reconnect: true,
@@ -62,7 +77,9 @@ impl Default for Settings {
             selected: 0,
             bypass: Vec::new(),
             theme: Theme::Dark,
-            accent: [151, 223, 190],
+            accent: [194, 205, 223],
+            colorway: Colorway::Graphite,
+            reduced_motion: false,
             mode: Mode::Proxy,
             port: 2080,
         }
@@ -71,7 +88,7 @@ impl Default for Settings {
 
 impl Settings {
     pub fn migrate(&mut self) -> Result<()> {
-        if !(1..=3).contains(&self.schema) {
+        if !(1..=4).contains(&self.schema) {
             return Err("Версия настроек не поддерживается.".into());
         }
         if !self.profiles.is_empty() {
@@ -113,7 +130,7 @@ impl Settings {
             self.bypass.clear();
             self.selected_routing = 0;
         }
-        self.schema = 3;
+        self.schema = 4;
         self.validate()
     }
     pub fn current(&self) -> Option<&crate::catalog::Subscription> {
@@ -162,7 +179,7 @@ impl Settings {
         Ok(())
     }
     pub fn validate(&self) -> Result<()> {
-        if self.schema != 3 {
+        if self.schema != 4 {
             return Err("Версия настроек не поддерживается.".into());
         }
         if self.subscriptions.len() > 32
@@ -183,6 +200,31 @@ impl Settings {
             return Err("Старые исключения требуют миграции в профиль.".into());
         }
         crate::policy::validate_profiles(&self.routing_profiles, self.selected_routing)?;
+        if self.kill_switch
+            && self.routing_profiles[self.selected_routing]
+                .rules
+                .iter()
+                .any(|r| r.enabled && matches!(r.action, crate::policy::Action::Connection(_)))
+        {
+            return Err(
+                "Отключите Kill switch перед применением правил с внешним сетевым выходом.".into(),
+            );
+        }
+        crate::network::validate(&self.connections)?;
+        for rule in self
+            .routing_profiles
+            .iter()
+            .flat_map(|profile| &profile.rules)
+        {
+            if let crate::policy::Action::Connection(id) = rule.action
+                && !self
+                    .connections
+                    .iter()
+                    .any(|connection| connection.id == id)
+            {
+                return Err("Правило ссылается на удалённый сетевой выход.".into());
+            }
+        }
         let mut ids = std::collections::HashSet::new();
         for sub in &self.subscriptions {
             if sub.id == 0 || sub.id >= self.next_subscription_id || !ids.insert(sub.id) {
@@ -226,15 +268,81 @@ impl Settings {
     }
 }
 
-pub fn default_path() -> Result<PathBuf> {
-    let base = if let Some(p) =
-        std::env::var_os("XDG_CONFIG_HOME").filter(|p| Path::new(p).is_absolute())
-    {
-        PathBuf::from(p)
+fn config_base() -> Result<PathBuf> {
+    if let Some(p) = std::env::var_os("XDG_CONFIG_HOME").filter(|p| Path::new(p).is_absolute()) {
+        Ok(PathBuf::from(p))
     } else {
-        PathBuf::from(std::env::var_os("HOME").ok_or("Нет домашнего каталога.")?).join(".config")
-    };
-    Ok(base.join("velum/settings.json"))
+        Ok(
+            PathBuf::from(std::env::var_os("HOME").ok_or("Нет домашнего каталога.")?)
+                .join(".config"),
+        )
+    }
+}
+
+/// The stable scope coordinates old/new launchers before any directory is moved.
+pub fn instance_scope() -> Result<PathBuf> {
+    Ok(config_base()?.join("velum/settings.json"))
+}
+
+pub fn default_path() -> Result<PathBuf> {
+    let base = config_base()?;
+    let current = base.join("eivro/settings.json");
+    let legacy = base.join("velum/settings.json");
+    // Recovery subprocesses can still find a pre-migration proxy snapshot.
+    Ok(if !current.exists() && legacy.exists() {
+        legacy
+    } else {
+        current
+    })
+}
+
+/// Called by the GUI only after it owns the cross-version instance lock.
+pub fn prepare_config() -> Result<PathBuf> {
+    migrate_config_at(&config_base()?)
+}
+
+fn migrate_config_at(base: &Path) -> Result<PathBuf> {
+    let old = base.join("velum");
+    let new = base.join("eivro");
+    let path = new.join("settings.json");
+    if path.exists() || !old.join("settings.json").exists() {
+        return Ok(path);
+    }
+    if new.symlink_metadata().is_ok() {
+        return Err("Каталог Eivro уже существует без настроек. Старые данные сохранены; объедините каталоги вручную.".into());
+    }
+    let meta =
+        fs::symlink_metadata(&old).map_err(|_| "Не удалось проверить прежний каталог настроек.")?;
+    if !meta.is_dir() || meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o022 != 0 {
+        return Err("Небезопасные права прежнего каталога настроек.".into());
+    }
+    load(&old.join("settings.json"))?;
+    use std::os::unix::ffi::OsStrExt;
+    let from = std::ffi::CString::new(old.as_os_str().as_bytes())
+        .map_err(|_| "Некорректный путь настроек.")?;
+    let to = std::ffi::CString::new(new.as_os_str().as_bytes())
+        .map_err(|_| "Некорректный путь настроек.")?;
+    // NOREPLACE protects an Eivro directory created concurrently. Rename preserves
+    // private keys, backups and the proxy-recovery lock without copying secrets.
+    if unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            from.as_ptr(),
+            libc::AT_FDCWD,
+            to.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    } != 0
+    {
+        return Err(
+            "Не удалось перенести настройки Velum в Eivro. Старые данные сохранены.".into(),
+        );
+    }
+    File::open(base)
+        .and_then(|f| f.sync_all())
+        .map_err(|_| "Настройки перенесены, но синхронизация каталога не удалась.")?;
+    Ok(path)
 }
 
 pub fn load(path: &Path) -> Result<Settings> {
@@ -343,10 +451,12 @@ fn backup_legacy(path: &Path, dir: &Path) -> Result<()> {
     let old: serde_json::Value = serde_json::from_slice(&data)
         .map_err(|_| "Прежние настройки повреждены; запись отменена.")?;
     let old_schema = old["schema"].as_u64().unwrap_or(0);
-    if old_schema >= 3 {
+    if old_schema >= 4 {
         return Ok(());
     }
-    let backup = dir.join(if old_schema == 1 {
+    let backup = dir.join(if old_schema == 3 {
+        "settings-before-1.1.json"
+    } else if old_schema == 1 {
         "settings-before-alpha.json"
     } else {
         "settings-before-alpha2.json"
@@ -368,4 +478,104 @@ fn backup_legacy(path: &Path, dir: &Path) -> Result<()> {
         Err(_) => return Err("Не удалось сохранить настройки для отката.".into()),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod rebrand_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    struct Fixture(PathBuf);
+    impl Fixture {
+        fn new() -> Self {
+            let base = std::env::temp_dir().join(format!(
+                "eivro-migrate-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&base).unwrap();
+            save(&base.join("velum/settings.json"), &Settings::default()).unwrap();
+            Self(base)
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn rename_preserves_private_data_recovery_files_and_permissions() {
+        let f = Fixture::new();
+        let old = f.0.join("velum");
+        fs::create_dir(old.join("imports")).unwrap();
+        for name in [
+            "imports/profile",
+            "proxy-state.json",
+            "proxy.lock",
+            "settings-before-1.1.json",
+        ] {
+            fs::write(old.join(name), b"synthetic-private-data").unwrap();
+            fs::set_permissions(old.join(name), fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let bytes = fs::read(old.join("settings.json")).unwrap();
+        let inode = fs::metadata(&old).unwrap().ino();
+        let path = migrate_config_at(&f.0).unwrap();
+        assert!(!old.exists());
+        assert_eq!(path, f.0.join("eivro/settings.json"));
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(fs::metadata(path.parent().unwrap()).unwrap().ino(), inode);
+        assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
+        for name in [
+            "imports/profile",
+            "proxy-state.json",
+            "proxy.lock",
+            "settings-before-1.1.json",
+        ] {
+            let file = f.0.join("eivro").join(name);
+            assert_eq!(fs::read(&file).unwrap(), b"synthetic-private-data");
+            assert_eq!(fs::metadata(file).unwrap().mode() & 0o777, 0o600);
+        }
+        assert_eq!(migrate_config_at(&f.0).unwrap(), path);
+    }
+
+    #[test]
+    fn existing_current_config_is_never_replaced_or_merged() {
+        let f = Fixture::new();
+        let path = f.0.join("eivro/settings.json");
+        let settings = Settings {
+            port: 2199,
+            ..Settings::default()
+        };
+        save(&path, &settings).unwrap();
+        assert_eq!(migrate_config_at(&f.0).unwrap(), path);
+        assert_eq!(load(&path).unwrap().port, 2199);
+        assert!(f.0.join("velum/settings.json").exists());
+        fs::remove_file(&path).unwrap();
+        assert!(migrate_config_at(&f.0).is_err());
+        assert!(f.0.join("velum/settings.json").exists());
+    }
+
+    #[test]
+    fn invalid_or_unsafe_legacy_config_is_left_intact() {
+        let f = Fixture::new();
+        let old = f.0.join("velum/settings.json");
+        fs::set_permissions(&old, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(migrate_config_at(&f.0).is_err());
+        fs::set_permissions(&old, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::write(&old, b"invalid JSON").unwrap();
+        assert!(migrate_config_at(&f.0).is_err());
+        assert_eq!(fs::read(old).unwrap(), b"invalid JSON");
+        assert!(!f.0.join("eivro").exists());
+    }
+
+    #[test]
+    fn linked_legacy_directory_is_not_moved() {
+        let f = Fixture::new();
+        fs::rename(f.0.join("velum"), f.0.join("outside")).unwrap();
+        std::os::unix::fs::symlink(f.0.join("outside"), f.0.join("velum")).unwrap();
+        assert!(migrate_config_at(&f.0).is_err());
+        assert!(f.0.join("outside/settings.json").exists());
+        assert!(!f.0.join("eivro").exists());
+    }
 }

@@ -35,7 +35,7 @@ def inside(binary):
         while snapshot() != before and time.monotonic() < end:
             time.sleep(.05)
         assert snapshot() == before, 'original desktop settings were not restored'
-        assert not (Path(os.environ['XDG_CONFIG_HOME'])/'velum/proxy-recovery.json').exists()
+        assert not (Path(os.environ['XDG_CONFIG_HOME'])/'eivro/proxy-recovery.json').exists()
 
     put('mode', "'auto'")
     put('autoconfig-url', "'https://proxy.example/config.pac'")
@@ -72,7 +72,7 @@ signal.pause()
     assert snapshot() == external
     print('external client changes preserved: OK')
 
-    # Restore Velum endpoints while retaining independently edited preferences.
+    # Restore Eivro endpoints while retaining independently edited preferences.
     put('mode', "'none'")
     before = snapshot()
     old_exceptions = get('ignore-hosts')
@@ -96,7 +96,7 @@ if __name__ == '__main__':
         inside(sys.argv[2])
     else:
         binary = str(Path(sys.argv[1]).resolve())
-        with tempfile.TemporaryDirectory(prefix='velum-desktop-test-') as folder:
+        with tempfile.TemporaryDirectory(prefix='eivro-desktop-test-') as folder:
             root = Path(folder)
             for name in ['config', 'runtime', 'cache']:
                 (root/name).mkdir(mode=0o700)

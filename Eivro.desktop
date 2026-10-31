@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
-Name=Velum
+Name=Eivro
 Comment=Клиент прокси без логов
-Exec=/home/fruja/Desktop/Velum/start.sh
-Icon=/home/fruja/Desktop/Velum/assets/io.velum.Client.svg
+Exec=/home/fruja/Desktop/Eivro/start.sh
+Icon=/home/fruja/Desktop/Eivro/assets/io.eivro.Client.svg
 Terminal=false
 Categories=Network;

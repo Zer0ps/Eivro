@@ -288,7 +288,7 @@ pub fn parse_uri(uri: &str) -> Result<Parsed> {
         {
             // Query keys can themselves contain a token or a nested private URL.
             return Err(
-                "Ссылка содержит неподдерживаемый параметр. Проверьте формат или обновите Velum."
+                "Ссылка содержит неподдерживаемый параметр. Проверьте формат или обновите Eivro."
                     .into(),
             );
         }
@@ -701,7 +701,7 @@ pub fn download_document(input: &str) -> Result<Download> {
         let response = agent
             .get(url.as_str())
             .timeout(remaining)
-            .set("User-Agent", concat!("Velum/", env!("CARGO_PKG_VERSION")))
+            .set("User-Agent", concat!("Eivro/", env!("CARGO_PKG_VERSION")))
             .set("Accept-Encoding", "identity")
             .call()
             .map_err(download_error)?;

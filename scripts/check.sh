@@ -11,4 +11,6 @@ PY
 cargo fmt --all --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
+cargo build --locked --example network-lab-config
+python3 tests/network_lab.py
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_diagnose_link.py' -v

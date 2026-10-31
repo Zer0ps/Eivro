@@ -11,7 +11,7 @@ pub fn check_url(port: u16, url: &str) -> Result<()> {
         .redirects(0)
         .build()
         .get(url)
-        .set("User-Agent", "Velum connectivity check")
+        .set("User-Agent", "Eivro connectivity check")
         .call()
         .map_err(|_| "Нет ответа через выбранный сервер.")?;
     if ![200, 204].contains(&response.status()) {

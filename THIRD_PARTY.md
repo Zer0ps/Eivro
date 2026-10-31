@@ -4,7 +4,7 @@
   https://github.com/SagerNet/sing-box/tree/v1.14.4
   Official binary and archive checksums are pinned in `scripts/fetch-core.py`.
   Upstream license and naming condition are reproduced in `vendor/LICENSE`
-  and in every package as `sing-box.LICENSE`. Velum is an independent project
+  and in every package as `sing-box.LICENSE`. Eivro is an independent project
   and does not imply endorsement by SagerNet or Happ.
 - Xray-core **26.10.21**, XTLS, MPL-2.0. Source tag:
   https://github.com/XTLS/Xray-core/tree/v26.10.21
@@ -28,7 +28,7 @@ the build scripts.
 
 ## Noto Emoji
 
-Встроенный монохромный шрифт Velum Emoji получен из Google Noto Emoji (OFL-1.1):
+Встроенный монохромный шрифт Eivro Emoji получен из Google Noto Emoji (OFL-1.1):
 https://github.com/google/fonts/tree/main/ofl/notoemoji . Лицензия в assets/NotoEmoji.LICENSE
 и пакетах поставки. scripts/build-emoji-font.py создаёт cmap-алиасы для составных
 Unicode 16 emoji посредством HarfBuzz/FontTools; эти инструменты нужны только для
@@ -37,3 +37,9 @@ Unicode emoji sequences: https://unicode.org/Public/emoji/16.0/emoji-test.txt .
 
 ksni и zbus обеспечивают локальный StatusNotifierItem/D-Bus. Их версии закреплены
 в Cargo.lock; лицензионные сведения доступны в соответствующих Cargo.toml зависимостей.
+
+## Inter
+
+Inter Regular / SemiBold by Rasmus Andersson, SIL Open Font License 1.1.
+Embedded from the Fedora rsms-inter-fonts package. Upstream: https://rsms.me/inter/.
+The full license is in `assets/Inter.LICENSE` and included in each binary package.

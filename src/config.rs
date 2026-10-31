@@ -29,11 +29,40 @@ pub struct ConnectRequest {
     pub policies: Vec<crate::policy::PolicyRule>,
     #[serde(default)]
     pub kill_switch: bool,
+    #[serde(default)]
+    pub connections: Vec<crate::network::Connection>,
 }
 
 pub fn generate(req: &ConnectRequest, mode: Mode) -> Result<Value> {
+    generate_with_network(req, mode, &[])
+}
+
+pub fn generate_with_network(
+    req: &ConnectRequest,
+    mode: Mode,
+    links: &[crate::network::Interface],
+) -> Result<Value> {
+    crate::network::validate(&req.connections)?;
+    for rule in &req.policies {
+        if let crate::policy::Action::Connection(id) = rule.action
+            && !req.connections.iter().any(|connection| connection.id == id)
+        {
+            return Err("Правило ссылается на удалённый сетевой выход.".into());
+        }
+    }
     if req.kill_switch && mode != Mode::Tun {
         return Err("Защита от обрыва доступна только для TUN.".into());
+    }
+    if req.kill_switch
+        && req
+            .policies
+            .iter()
+            .any(|r| r.enabled && matches!(r.action, crate::policy::Action::Connection(_)))
+    {
+        return Err(
+            "Kill switch несовместим с внешними сетевыми выходами. Отключите его в настройках."
+                .into(),
+        );
     }
     if req.port < 1024 {
         return Err("Выберите локальный порт от 1024 до 65535.".into());
@@ -68,25 +97,56 @@ pub fn generate(req: &ConnectRequest, mode: Mode) -> Result<Value> {
         );
     }
     let mut dns_rules = Vec::new();
+    let mut extra_outbounds = Vec::new();
+    let mut extra_dns = Vec::new();
+    let mut available = std::collections::HashSet::new();
+    for connection in &req.connections {
+        if !req.policies.iter().any(|rule| {
+            rule.enabled && rule.action == crate::policy::Action::Connection(connection.id)
+        }) {
+            continue;
+        }
+        if let Some(servers) = connection.servers(links) {
+            available.insert(connection.id);
+            let dns_tag = format!("network-dns-{}", connection.id);
+            // Use the primary advertised resolver. It remains bound to the same
+            // interface; public DNS is never a fallback for a named exit.
+            extra_dns.push(json!({"type":"udp", "tag":dns_tag,
+                "server":servers[0].to_string(), "bind_interface":connection.interface}));
+            extra_outbounds.push(
+                json!({"type":"direct", "tag":format!("network-{}",connection.id),
+                "bind_interface":connection.interface, "domain_resolver":dns_tag}),
+            );
+        }
+    }
     crate::policy::validate_rules(&req.policies)?;
     for rule in req.policies.iter().filter(|r| r.enabled) {
         if mode != Mode::Tun && matches!(rule.target, crate::policy::Target::Application(_)) {
             continue;
         }
+        let unavailable = matches!(rule.action, crate::policy::Action::Connection(id) if !available.contains(&id));
         let mut route = rule.target.matcher()?;
-        route["action"] = json!("route");
-        route["outbound"] = json!(rule.action.outbound());
+        if unavailable {
+            route["action"] = json!("reject");
+        } else {
+            route["action"] = json!("route");
+            route["outbound"] = json!(rule.action.outbound());
+        }
         routes.push(route);
         if let crate::policy::Target::Address(address) = &rule.target
             && !matches!(Rule::parse(address)?, Rule::Network(_))
         {
             let mut dns = rule.target.matcher()?;
-            dns["action"] = json!("route");
-            dns["server"] = json!(if rule.action == crate::policy::Action::Direct {
-                "direct-dns"
+            if unavailable {
+                dns["action"] = json!("reject");
             } else {
-                "proxy-dns"
-            });
+                dns["action"] = json!("route");
+                dns["server"] = json!(match rule.action {
+                    crate::policy::Action::Direct => "direct-dns".into(),
+                    crate::policy::Action::Proxy => "proxy-dns".into(),
+                    crate::policy::Action::Connection(id) => format!("network-dns-{id}"),
+                });
+            }
             dns_rules.push(dns);
         }
     }
@@ -110,7 +170,7 @@ pub fn generate(req: &ConnectRequest, mode: Mode) -> Result<Value> {
     }
     if mode == Mode::Tun {
         inbounds.push(json!({
-            "type":"tun","tag":"tun","interface_name":"velum0",
+            "type":"tun","tag":"tun","interface_name":"eivro0",
             "address":["172.31.250.1/30","fdfe:5645:4c55::1/126"],
             "mtu":1500,"auto_route":true,"strict_route":true,
             "dns_mode":"hijack","stack":"system"
@@ -131,12 +191,24 @@ pub fn generate(req: &ConnectRequest, mode: Mode) -> Result<Value> {
         "route":{"auto_detect_interface":true,"default_domain_resolver":"bootstrap","rules":routes,"final":"proxy"},
         "experimental":{"cache_file":{"enabled":false}}
     });
+    config["outbounds"]
+        .as_array_mut()
+        .unwrap()
+        .extend(extra_outbounds);
+    config["dns"]["servers"]
+        .as_array_mut()
+        .unwrap()
+        .extend(extra_dns);
     if req.kill_switch {
         for outbound in config["outbounds"].as_array_mut().unwrap() {
             outbound["routing_mark"] = json!(crate::guard::MARK);
         }
         config["dns"]["servers"][0] = json!({"type":"https","tag":"bootstrap","server":"1.1.1.1","routing_mark":crate::guard::MARK});
-        config["dns"]["servers"][1]["routing_mark"] = json!(crate::guard::MARK);
+        for server in config["dns"]["servers"].as_array_mut().unwrap() {
+            if server["detour"] != "proxy" {
+                server["routing_mark"] = json!(crate::guard::MARK);
+            }
+        }
     }
     Ok(config)
 }

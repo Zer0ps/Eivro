@@ -1,11 +1,11 @@
 [package]
-name = "velum"
-version = "1.0.0"
+name = "eivro"
+version = "1.2.2"
 edition = "2024"
 rust-version = "1.88"
 description = "A quiet, native Linux proxy client"
 license = "GPL-3.0-or-later"
-default-run = "velum"
+default-run = "eivro"
 
 [features]
 default = ["gui"]
@@ -36,13 +36,13 @@ url = "2.5"
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
 
 [[bin]]
-name = "velum"
+name = "eivro"
 path = "src/main.rs"
 required-features = ["gui"]
 
 [[bin]]
-name = "velum-tun"
-path = "src/bin/velum-tun.rs"
+name = "eivro-tun"
+path = "src/bin/eivro-tun.rs"
 
 [profile.release]
 opt-level = 3

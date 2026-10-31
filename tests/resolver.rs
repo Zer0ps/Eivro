@@ -6,7 +6,7 @@ use std::{
 
 #[test]
 fn worker_uses_system_localhost_resolution_over_private_pipes() {
-    let mut worker = Command::new(env!("CARGO_BIN_EXE_velum"))
+    let mut worker = Command::new(env!("CARGO_BIN_EXE_eivro"))
         .arg("--resolve-system")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -33,7 +33,7 @@ fn worker_uses_system_localhost_resolution_over_private_pipes() {
 
 #[test]
 fn production_resolver_discovers_worker_and_honors_expired_budget() {
-    let result = velum::resolver::resolve(
+    let result = eivro::resolver::resolve(
         "localhost:8443",
         Instant::now() + Duration::from_secs(5),
         None,
@@ -45,7 +45,7 @@ fn production_resolver_discovers_worker_and_honors_expired_budget() {
             .all(|a| a.ip().is_loopback() && a.port() == 8443)
     );
     assert_eq!(
-        velum::resolver::resolve("localhost:443", Instant::now(), None)
+        eivro::resolver::resolve("localhost:443", Instant::now(), None)
             .unwrap_err()
             .kind(),
         std::io::ErrorKind::TimedOut
@@ -54,7 +54,7 @@ fn production_resolver_discovers_worker_and_honors_expired_budget() {
 
 #[test]
 fn malformed_worker_input_does_not_echo_secrets() {
-    let mut worker = Command::new(env!("CARGO_BIN_EXE_velum"))
+    let mut worker = Command::new(env!("CARGO_BIN_EXE_eivro"))
         .arg("--resolve-system")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -74,21 +74,21 @@ fn malformed_worker_input_does_not_echo_secrets() {
 
 #[test]
 fn stalled_system_dns_bounds_subscription_and_session_cancellation() {
-    use std::{fs, os::unix::fs::PermissionsExt, sync::Arc};
-    use velum::{
+    use eivro::{
         config::{ConnectRequest, Mode},
         process::Session,
     };
-    if std::env::var_os("VELUM_DNS_REGRESSION_CHILD").is_none() {
+    use std::{fs, os::unix::fs::PermissionsExt, sync::Arc};
+    if std::env::var_os("EIVRO_DNS_REGRESSION_CHILD").is_none() {
         // Re-exec only this test next to a fake resolver worker. Production has
         // no test environment hooks, and the host resolver/network is untouched.
         let directory =
-            std::env::temp_dir().join(format!("velum-dns-regression-{}", std::process::id()));
+            std::env::temp_dir().join(format!("eivro-dns-regression-{}", std::process::id()));
         fs::create_dir(&directory).unwrap();
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
         let driver = directory.join("dns-test");
         fs::copy(std::env::current_exe().unwrap(), &driver).unwrap();
-        let worker = directory.join("velum");
+        let worker = directory.join("eivro");
         fs::write(&worker, "#!/usr/bin/python3\nimport os,sys,time\nfrom pathlib import Path\nassert sys.argv[1:] == ['--resolve-system']\nsys.stdin.read()\nPath(__file__).with_name('worker.pid').write_text(str(os.getpid()))\ntime.sleep(60)\n").unwrap();
         fs::set_permissions(&worker, fs::Permissions::from_mode(0o700)).unwrap();
         for name in ["xray", "sing-box"] {
@@ -106,7 +106,7 @@ fn stalled_system_dns_bounds_subscription_and_session_cancellation() {
                 "stalled_system_dns_bounds_subscription_and_session_cancellation",
                 "--nocapture",
             ])
-            .env("VELUM_DNS_REGRESSION_CHILD", "1")
+            .env("EIVRO_DNS_REGRESSION_CHILD", "1")
             .output()
             .unwrap();
         fs::remove_dir_all(directory).unwrap();
@@ -122,6 +122,7 @@ fn stalled_system_dns_bounds_subscription_and_session_cancellation() {
         .unwrap()
         .with_file_name("worker.pid");
     let req = ConnectRequest {
+        connections: vec![],
         uri: "vless://00000000-0000-4000-8000-000000000001@resolver.invalid:443?security=reality&sni=example.com&fp=firefox&pbk=CQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=1122334455667788&type=tcp&flow=xtls-rprx-vision".into(),
         port: std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port(),
         bridge_port: None, probe_port: None, policies: vec![], bypass: vec![], kill_switch: false,
@@ -149,7 +150,7 @@ fn stalled_system_dns_bounds_subscription_and_session_cancellation() {
     check_reaped();
     fs::remove_file(&pid_path).unwrap();
     let start = Instant::now();
-    let error = velum::import::download_document("https://resolver.invalid/sub/synthetic")
+    let error = eivro::import::download_document("https://resolver.invalid/sub/synthetic")
         .err()
         .unwrap();
     assert!(error.contains("Время загрузки подписки истекло"), "{error}");

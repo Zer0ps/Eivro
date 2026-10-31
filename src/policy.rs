@@ -9,18 +9,21 @@ pub enum Action {
     #[default]
     Direct,
     Proxy,
+    Connection(u64),
 }
 impl Action {
     pub fn label(self) -> &'static str {
         match self {
             Self::Direct => "Напрямую",
             Self::Proxy => "Через VPN",
+            Self::Connection(_) => "Сетевой выход",
         }
     }
-    pub fn outbound(self) -> &'static str {
+    pub fn outbound(self) -> String {
         match self {
-            Self::Direct => "direct",
-            Self::Proxy => "proxy",
+            Self::Direct => "direct".into(),
+            Self::Proxy => "proxy".into(),
+            Self::Connection(id) => format!("network-{id}"),
         }
     }
 }

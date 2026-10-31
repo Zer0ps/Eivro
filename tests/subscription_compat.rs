@@ -1,7 +1,7 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
+use eivro::{import::parse_uri, process, subscription};
 use serde_json::json;
 use std::io::{Cursor, Write};
-use velum::{import::parse_uri, process, subscription};
 
 fn link(transport: &str) -> String {
     let protection = if transport == "ws" {

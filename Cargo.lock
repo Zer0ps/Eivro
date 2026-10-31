@@ -2781,8 +2781,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "velum"
-version = "1.0.0"
+name = "eivro"
+version = "1.2.2"
 dependencies = [
  "base64",
  "eframe",

@@ -1,4 +1,11 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use eivro::{
+    config::{ConnectRequest, Mode, generate},
+    import::{EngineKind, parse_uri},
+    process::{self, Event, Session},
+    subscription::import_bytes,
+    xray,
+};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeSet,
@@ -8,13 +15,6 @@ use std::{
     process::{Child, Command, Stdio},
     sync::Arc,
     time::Duration,
-};
-use velum::{
-    config::{ConnectRequest, Mode, generate},
-    import::{EngineKind, parse_uri},
-    process::{self, Event, Session},
-    subscription::import_bytes,
-    xray,
 };
 
 fn fixture() -> Value {
@@ -29,6 +29,7 @@ fn port() -> u16 {
 }
 fn request(uri: String, port: u16) -> ConnectRequest {
     ConnectRequest {
+        connections: vec![],
         probe_port: None,
         policies: vec![],
         kill_switch: false,
@@ -61,6 +62,7 @@ fn real_provider_shapes_preserve_transports_and_pass_both_cores() {
             );
         }
         let req = ConnectRequest {
+            connections: vec![],
             probe_port: None,
             policies: vec![],
             kill_switch: false,
@@ -136,6 +138,7 @@ fn tcp_reality_links_use_xray_and_preserve_authentication_and_transport() {
             assert_eq!(stream["realitySettings"]["show"], false);
             process::validate_profiles(&import_bytes(uri.as_bytes()).unwrap()).unwrap();
             let req = ConnectRequest {
+                connections: vec![],
                 bridge_port: Some(2081),
                 ..request(uri.clone(), 2080)
             };
@@ -206,9 +209,9 @@ fn xhttp_session_fields_migrate_saved_profiles_and_validate_new_names() {
         })
         .unwrap()
         .clone();
-    let canonical = json!({"sessionIDPlacement":"header","sessionIDKey":"X-Velum-Session"});
+    let canonical = json!({"sessionIDPlacement":"header","sessionIDKey":"X-Eivro-Session"});
     outbound["streamSettings"]["xhttpSettings"]["extra"] =
-        json!({"sessionPlacement":"header","sessionKey":"X-Velum-Session"});
+        json!({"sessionPlacement":"header","sessionKey":"X-Eivro-Session"});
     // Old stored URIs bypass profile(), so exercise normalization during loading.
     let saved = format!(
         "{}{}",

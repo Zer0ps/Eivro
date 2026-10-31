@@ -5,6 +5,7 @@ pub mod connectivity;
 pub mod desktop;
 pub mod guard;
 pub mod import;
+pub mod network;
 pub mod policy;
 pub mod privacy;
 pub mod process;

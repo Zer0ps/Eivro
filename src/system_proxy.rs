@@ -14,7 +14,7 @@ use std::{
     process::{Command, Stdio},
 };
 
-const BUSY: &str = "Системным прокси уже управляет другое окно Velum.";
+const BUSY: &str = "Системным прокси уже управляет другое окно Eivro.";
 const KEYS: &[(&str, &str)] = &[
     ("org.gnome.system.proxy", "mode"),
     ("org.gnome.system.proxy", "use-same-proxy"),
@@ -162,7 +162,7 @@ impl Store {
             .map_err(|_| "Нет доступа к настройкам прокси.")?;
         let meta = fs::symlink_metadata(&dir).map_err(|_| "Нет каталога настроек.")?;
         if !meta.is_dir() || meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o077 != 0 {
-            return Err("Каталог настроек Velum должен иметь права 700.".into());
+            return Err("Каталог настроек Eivro должен иметь права 700.".into());
         }
         let lock = OpenOptions::new()
             .read(true)
@@ -282,7 +282,7 @@ pub fn guard(port: u16) -> Result<bool> {
         std::io::stdout()
             .write_all(b"READY\n")
             .and_then(|_| std::io::stdout().flush())
-            .map_err(|_| "Окно Velum закрылось.")?;
+            .map_err(|_| "Окно Eivro закрылось.")?;
         let mut fds = [
             crate::process::pollfd(0, libc::POLLIN),
             crate::process::pollfd(signals.as_raw_fd(), libc::POLLIN),

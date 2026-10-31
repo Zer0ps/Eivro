@@ -1,4 +1,9 @@
 //! Real core supervision over a pipe; Mode::Local never creates TUN or changes DNS.
+use eivro::{
+    config::{ConnectRequest, Mode},
+    process,
+    tun::{self, CommandMessage},
+};
 use std::{
     io::{BufRead, BufReader, Write},
     net::TcpListener,
@@ -8,11 +13,6 @@ use std::{
         atomic::{AtomicU32, Ordering},
     },
 };
-use velum::{
-    config::{ConnectRequest, Mode},
-    process,
-    tun::{self, CommandMessage},
-};
 fn request() -> ConnectRequest {
     let port = TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -20,6 +20,7 @@ fn request() -> ConnectRequest {
         .unwrap()
         .port();
     ConnectRequest {
+        connections: vec![],
         uri: "ss://chacha20-ietf-poly1305:synthetic@127.0.0.1:1".into(),
         bypass: vec![],
         port,

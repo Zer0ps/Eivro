@@ -43,8 +43,8 @@ for line in sequences.read_text().splitlines():
     mapping[text] = chr(alias)
 for record in font['name'].names:
     if record.nameID in (1, 3, 4, 6, 16):
-        record.string = ("VelumEmoji" if record.nameID == 6 else "Velum Emoji").encode(record.getEncoding())
-font.save(root / 'assets/VelumEmoji.ttf')
+        record.string = ("EivroEmoji" if record.nameID == 6 else "Eivro Emoji").encode(record.getEncoding())
+font.save(root / 'assets/EivroEmoji.ttf')
 (root / 'assets/emoji-map.json').write_text(json.dumps(mapping, ensure_ascii=False, separators=(',', ':')))
 (root / 'assets/emoji-sources.json').write_text(json.dumps({p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in (source,sequences)},indent=2)+'\n')
 print(f'Built {len(mapping)} emoji sequences, including flags and joined glyphs.')

@@ -1,3 +1,4 @@
+use eivro::{privacy, process};
 use std::{
     fs::OpenOptions,
     io::Write,
@@ -5,7 +6,6 @@ use std::{
     os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::Path,
 };
-use velum::{privacy, process};
 
 fn main() {
     if std::env::args()
@@ -13,7 +13,7 @@ fn main() {
         .get(1)
         .is_some_and(|s| s == "--version")
     {
-        println!("Velum TUN {}", env!("CARGO_PKG_VERSION"));
+        println!("Eivro TUN {}", env!("CARGO_PKG_VERSION"));
         return;
     }
     if privacy::harden().is_err() {
@@ -25,7 +25,7 @@ fn main() {
     }
 }
 
-fn run() -> velum::Result<()> {
+fn run() -> eivro::Result<()> {
     if unsafe { libc::geteuid() } != 0
         || !process::trusted_binary(Path::new(process::INSTALLED_CORE))
     {
@@ -56,12 +56,12 @@ fn run() -> velum::Result<()> {
         return Err("already running".into());
     }
     if release {
-        return velum::guard::Guard::clear_stale();
+        return eivro::guard::Guard::clear_stale();
     }
     let input = std::fs::File::open("/dev/stdin").map_err(|_| "input")?;
-    velum::tun::serve_backend(
+    eivro::tun::serve_backend(
         input,
         std::io::stdout(),
-        velum::guard::SystemBackend::default(),
+        eivro::guard::SystemBackend::default(),
     )
 }

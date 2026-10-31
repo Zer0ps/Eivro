@@ -27,6 +27,7 @@ impl Instance {
         let hash = scope.bytes().fold(0xcbf29ce484222325u64, |h, b| {
             (h ^ b as u64).wrapping_mul(0x100000001b3)
         });
+        // Retain the pre-rename namespace to coordinate with a running Velum.
         let address = SocketAddr::from_abstract_name(format!("velum-{uid}-{hash:016x}"))?;
         let listener = match UnixListener::bind_addr(&address) {
             Ok(l) => l,
@@ -55,10 +56,10 @@ impl Instance {
         let worker = std::thread::spawn(move || {
             loop {
                 let mut fds = [
-                    velum::process::pollfd(listener.as_raw_fd(), libc::POLLIN),
-                    velum::process::pollfd(watch.as_raw_fd(), libc::POLLIN),
+                    eivro::process::pollfd(listener.as_raw_fd(), libc::POLLIN),
+                    eivro::process::pollfd(watch.as_raw_fd(), libc::POLLIN),
                 ];
-                if velum::process::poll(&mut fds).is_err() || fds[1].revents != 0 {
+                if eivro::process::poll(&mut fds).is_err() || fds[1].revents != 0 {
                     break;
                 }
                 if let Ok((mut stream, _)) = listener.accept() {

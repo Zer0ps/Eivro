@@ -1,6 +1,6 @@
 use super::*;
+use eivro::desktop::Event as DesktopEvent;
 use std::time::Instant;
-use velum::desktop::Event as DesktopEvent;
 impl App {
     pub(super) fn desktop_events(&mut self, ctx: &egui::Context) {
         if self
@@ -48,6 +48,7 @@ impl App {
                         self.network_reconnect();
                     }
                 }
+                DesktopEvent::DnsChanged => self.schedule_network_scan(ctx),
                 DesktopEvent::MonitorUnavailable => self.monitor_unavailable = true,
             }
         }

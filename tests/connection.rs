@@ -1,3 +1,7 @@
+use eivro::{
+    config::{ConnectRequest, Mode},
+    process::{self, Event, Session},
+};
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
@@ -8,10 +12,6 @@ use std::{
     },
     time::Duration,
 };
-use velum::{
-    config::{ConnectRequest, Mode},
-    process::{self, Event, Session},
-};
 fn port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -21,6 +21,7 @@ fn port() -> u16 {
 }
 fn request() -> ConnectRequest {
     ConnectRequest {
+        connections: vec![],
         uri: format!("ss://chacha20-ietf-poly1305:synthetic@127.0.0.1:{}", port()),
         port: port(),
         bridge_port: None,
@@ -54,8 +55,8 @@ fn health_check_cannot_succeed_through_a_direct_routing_exception() {
     let mut core = process::spawn_core(&process::core_path().unwrap(), &req, Mode::Local).unwrap();
     process::ready(&mut core, req.port).unwrap();
     let url = format!("http://127.0.0.1:{http_port}/");
-    let direct = velum::connectivity::check_url(req.port, &url);
-    let proxy = velum::connectivity::check_url(req.probe_port.unwrap(), &url);
+    let direct = eivro::connectivity::check_url(req.port, &url);
+    let proxy = eivro::connectivity::check_url(req.probe_port.unwrap(), &url);
     process::terminate(&mut core);
     drop(TcpStream::connect(("127.0.0.1", http_port)).unwrap());
     responder.join().unwrap();
@@ -84,7 +85,7 @@ fn real_gnome_settings_recover_on_stop_and_crash() {
     let result = Command::new("python3")
         .args([
             "scripts/check-proxy-settings.py",
-            env!("CARGO_BIN_EXE_velum"),
+            env!("CARGO_BIN_EXE_eivro"),
         ])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()

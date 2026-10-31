@@ -8,10 +8,31 @@ static MAP: LazyLock<HashMap<String, String>> = LazyLock::new(|| {
 pub fn install(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
-        "emoji".into(),
-        egui::FontData::from_static(include_bytes!("../assets/VelumEmoji.ttf")).into(),
+        "inter".into(),
+        egui::FontData::from_static(include_bytes!("../assets/Inter-Regular.ttf")).into(),
     );
-    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+    fonts.font_data.insert(
+        "inter-display".into(),
+        egui::FontData::from_static(include_bytes!("../assets/Inter-SemiBold.ttf")).into(),
+    );
+    fonts
+        .families
+        .get_mut(&egui::FontFamily::Proportional)
+        .unwrap()
+        .insert(0, "inter".into());
+    fonts.families.insert(
+        egui::FontFamily::Name("display".into()),
+        vec!["inter-display".into(), "inter".into()],
+    );
+    fonts.font_data.insert(
+        "emoji".into(),
+        egui::FontData::from_static(include_bytes!("../assets/EivroEmoji.ttf")).into(),
+    );
+    for family in [
+        egui::FontFamily::Proportional,
+        egui::FontFamily::Monospace,
+        egui::FontFamily::Name("display".into()),
+    ] {
         fonts
             .families
             .entry(family)

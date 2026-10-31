@@ -13,10 +13,10 @@ def terminate(*_):
 
 
 signal.signal(signal.SIGTERM, terminate)
-with tempfile.TemporaryDirectory(prefix="velum-reality-test-") as tmp:
+with tempfile.TemporaryDirectory(prefix="eivro-reality-test-") as tmp:
     cert, key = Path(tmp) / "cert.pem", Path(tmp) / "key.pem"
     subprocess.run(
-        ["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-days", "1", "-keyout", str(key), "-out", str(cert), "-subj", "/CN=cover.velum.test", "-addext", "subjectAltName=DNS:cover.velum.test"],
+        ["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-days", "1", "-keyout", str(key), "-out", str(cert), "-subj", "/CN=cover.eivro.test", "-addext", "subjectAltName=DNS:cover.eivro.test"],
         check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3,
     )
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)

@@ -19,8 +19,8 @@ VERSION = tomllib.loads((ROOT / "Cargo.toml").read_text())["package"]["version"]
 PACKAGE_VERSION = VERSION.replace("-", "~")
 MACHINE = platform.machine()
 ARCH = {"x86_64": "amd64", "aarch64": "arm64"}[MACHINE]
-BASE = f"velum-{VERSION}-linux-{ARCH}"
-BIN_DIR = Path(os.environ.get("VELUM_BIN_DIR", str(ROOT / "target/release")))
+BASE = f"eivro-{VERSION}-linux-{ARCH}"
+BIN_DIR = Path(os.environ.get("EIVRO_BIN_DIR", str(ROOT / "target/release")))
 
 def copy(src, dst, mode=None):
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -48,17 +48,20 @@ def archive_tree(source, output, prefix=""):
 def create_deb(stage):
     control_dir = WORK / "deb-control"
     control_dir.mkdir(parents=True, exist_ok=True)
-    symbols = subprocess.check_output(["readelf", "--version-info", str(BIN_DIR / "velum")], text=True)
+    symbols = subprocess.check_output(["readelf", "--version-info", str(BIN_DIR / "eivro")], text=True)
     import re
     versions = re.findall(r"GLIBC_(\d+\.\d+)", symbols)
     minimum = max(versions, key=lambda v: tuple(map(int, v.split("."))))
     size = sum(p.stat().st_size for p in stage.rglob("*") if p.is_file()) // 1024
-    (control_dir / "control").write_text(f"""Package: velum
+    (control_dir / "control").write_text(f"""Package: eivro
+Provides: velum
+Replaces: velum (<< 1.2.0)
+Breaks: velum (<< 1.2.0)
 Version: {PACKAGE_VERSION}
 Section: net
 Priority: optional
 Architecture: {ARCH}
-Maintainer: Velum project <maintainers@velum.invalid>
+Maintainer: Eivro project <maintainers@eivro.invalid>
 Installed-Size: {size}
 Depends: libc6 (>= {minimum}), libgcc-s1, libgl1, libegl1, libxkbcommon0, libwayland-client0, libx11-6, libxcursor1, libxrandr2, libxi6, polkitd | policykit-1, pkexec | policykit-1, nftables, ca-certificates, iproute2, libglib2.0-bin, gsettings-desktop-schemas, dconf-gsettings-backend
 Recommends: xwayland
@@ -74,7 +77,7 @@ Description: Native Linux proxy client with local routing policies
     archive_tree(control_dir, WORK / "control.tar.gz")
     archive_tree(stage, WORK / "data.tar.gz")
     (WORK / "debian-binary").write_text("2.0\n")
-    output = DIST / f"velum_{PACKAGE_VERSION}_{ARCH}.deb"
+    output = DIST / f"eivro_{PACKAGE_VERSION}_{ARCH}.deb"
     output.unlink(missing_ok=True)
     subprocess.run(["ar", "rc", str(output), "debian-binary", "control.tar.gz", "data.tar.gz"], cwd=WORK, check=True)
 
@@ -84,8 +87,10 @@ def create_rpm(stage):
     top = WORK / "rpmbuild"
     for d in ("BUILD", "BUILDROOT", "RPMS", "SOURCES", "SPECS", "SRPMS", "tmp"):
         (top / d).mkdir(parents=True, exist_ok=True)
-    spec = top / "SPECS/velum.spec"
-    spec.write_text(f"""Name: velum
+    spec = top / "SPECS/eivro.spec"
+    spec.write_text(f"""Name: eivro
+Provides: velum = {PACKAGE_VERSION}
+Obsoletes: velum < 1.2.0
 Version: {PACKAGE_VERSION}
 Release: 1
 Summary: Native Linux proxy client with no application logs
@@ -103,17 +108,20 @@ Rust desktop client with sing-box, Xray and editable direct-routing policies.
 mkdir -p "%{{buildroot}}"
 cp -a "{stage}/." "%{{buildroot}}/"
 %files
+%attr(0755,root,root) /usr/bin/eivro
 %attr(0755,root,root) /usr/bin/velum
 %dir %attr(0755,root,root) /usr/libexec/velum
 %attr(0755,root,root) /usr/libexec/velum/velum
-%attr(0755,root,root) /usr/libexec/velum/velum-tun
-%attr(0755,root,root) /usr/libexec/velum/sing-box
-%attr(0755,root,root) /usr/libexec/velum/xray
-/usr/share/applications/io.velum.Client.desktop
-/usr/share/icons/hicolor/scalable/apps/io.velum.Client.svg
-/usr/share/polkit-1/actions/io.velum.tun.policy
-/usr/share/doc/velum
-/usr/share/licenses/velum
+%dir %attr(0755,root,root) /usr/libexec/eivro
+%attr(0755,root,root) /usr/libexec/eivro/eivro
+%attr(0755,root,root) /usr/libexec/eivro/eivro-tun
+%attr(0755,root,root) /usr/libexec/eivro/sing-box
+%attr(0755,root,root) /usr/libexec/eivro/xray
+/usr/share/applications/io.eivro.Client.desktop
+/usr/share/icons/hicolor/scalable/apps/io.eivro.Client.svg
+/usr/share/polkit-1/actions/io.eivro.tun.policy
+/usr/share/doc/eivro
+/usr/share/licenses/eivro
 """)
     subprocess.run(["rpmbuild", "-bb", "--define", f"_topdir {top}", "--define", f"_tmppath {top / 'tmp'}", "--define", "source_date_epoch_from_changelog 0", str(spec)], check=True)
     for p in (top / "RPMS").rglob("*.rpm"):
@@ -127,32 +135,32 @@ def create_appimage(portable):
     runtime = ROOT / ".tools/runtime-x86_64"
     if not tool.exists() or not runtime.exists():
         raise SystemExit("Run python3 scripts/fetch-appimage-tools.py for the AppImage build")
-    appdir = WORK / "Velum.AppDir"
+    appdir = WORK / "Eivro.AppDir"
     appdir.mkdir(exist_ok=True)
     for p in portable.iterdir():
         if p.is_file():
             copy(p, appdir / p.name)
         elif p.is_dir():
             shutil.copytree(p, appdir / p.name, dirs_exist_ok=True)
-    copy(ROOT / "assets/io.velum.Client.svg", appdir / "io.velum.Client.svg")
-    copy(ROOT / "packaging/io.velum.Client.desktop", appdir / "io.velum.Client.desktop")
-    (appdir / "AppRun").write_text('#!/bin/sh\nset -eu\nAPPDIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"\nexec "$APPDIR/velum" "$@"\n')
+    copy(ROOT / "assets/io.eivro.Client.svg", appdir / "io.eivro.Client.svg")
+    copy(ROOT / "packaging/io.eivro.Client.desktop", appdir / "io.eivro.Client.desktop")
+    (appdir / "AppRun").write_text('#!/bin/sh\nset -eu\nAPPDIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"\nexec "$APPDIR/eivro" "$@"\n')
     (appdir / "AppRun").chmod(0o755)
-    subprocess.run([str(tool), "--no-appstream", "--runtime-file", str(runtime), str(appdir), str(DIST / f"Velum-{VERSION}-{MACHINE}.AppImage")], env={**os.environ, "ARCH": MACHINE}, check=True)
+    subprocess.run([str(tool), "--no-appstream", "--runtime-file", str(runtime), str(appdir), str(DIST / f"Eivro-{VERSION}-{MACHINE}.AppImage")], env={**os.environ, "ARCH": MACHINE}, check=True)
 
 def create_source():
     # Explicit whitelist: never ship work/, local tools, credentials or profiles.
     names = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".gitignore",
              ".github", "src", "tests", "scripts", "docs", "assets", "packaging",
              "examples", "README.md", "PRIVACY.md", "LICENSE", "THIRD_PARTY.md",
-             "start.sh", "Velum.desktop", "vendor/LICENSE", "vendor/xray.LICENSE"]
-    with tarfile.open(DIST / f"velum-{VERSION}-source.tar.gz", "w:gz", compresslevel=9) as archive:
+             "start.sh", "Eivro.desktop", "vendor/LICENSE", "vendor/xray.LICENSE"]
+    with tarfile.open(DIST / f"eivro-{VERSION}-source.tar.gz", "w:gz", compresslevel=9) as archive:
         for name in names:
             item = ROOT / name
             for path in sorted(item.rglob("*")) if item.is_dir() else [item]:
                 if not path.is_file() or "__pycache__" in path.parts or path.suffix == ".pyc":
                     continue
-                info = archive.gettarinfo(path, arcname=f"velum-{VERSION}-source/{path.relative_to(ROOT)}")
+                info = archive.gettarinfo(path, arcname=f"eivro-{VERSION}-source/{path.relative_to(ROOT)}")
                 info.uid = info.gid = 0
                 info.uname = info.gname = "root"
                 info.mtime = 0
@@ -168,15 +176,15 @@ def main():
     subprocess.run([sys.executable, str(ROOT / "scripts/fetch-xray.py"), "--check"], check=True)
     try:
         helper_version = subprocess.run(
-            [str(BIN_DIR / "velum-tun"), "--version"],
+            [str(BIN_DIR / "eivro-tun"), "--version"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10,
         )
     except (OSError, subprocess.TimeoutExpired):
-        raise SystemExit("Missing or unusable Velum helper; run scripts/build.sh first")
-    if helper_version.returncode or helper_version.stdout != f"Velum TUN {VERSION}\n".encode():
-        raise SystemExit(f"Expected Velum {VERSION} binaries; run scripts/build.sh first")
-    app_version = subprocess.check_output([str(BIN_DIR / "velum"), "--version"], timeout=10)
-    if app_version != f"Velum {VERSION}\n".encode():
+        raise SystemExit("Missing or unusable Eivro helper; run scripts/build.sh first")
+    if helper_version.returncode or helper_version.stdout != f"Eivro TUN {VERSION}\n".encode():
+        raise SystemExit(f"Expected Eivro {VERSION} binaries; run scripts/build.sh first")
+    app_version = subprocess.check_output([str(BIN_DIR / "eivro"), "--version"], timeout=10)
+    if app_version != f"Eivro {VERSION}\n".encode():
         raise SystemExit("Application and helper versions differ")
     DIST.mkdir(exist_ok=True)
     if WORK.exists():
@@ -184,43 +192,53 @@ def main():
     WORK.mkdir(parents=True)
     portable = WORK / BASE
     stage = WORK / "stage"
-    for name in ("velum", "velum-tun"):
-        copy(BIN_DIR / name, stage / f"usr/libexec/velum/{name}", 0o755)
+    for name in ("eivro", "eivro-tun"):
+        copy(BIN_DIR / name, stage / f"usr/libexec/eivro/{name}", 0o755)
     for name in ("sing-box", "xray"):
-        copy(ROOT / f"vendor/{name}", stage / f"usr/libexec/velum/{name}", 0o755)
-    for name in ("velum", "sing-box", "xray"):
-        copy(stage / f"usr/libexec/velum/{name}", portable / name, 0o755)
+        copy(ROOT / f"vendor/{name}", stage / f"usr/libexec/eivro/{name}", 0o755)
+    for name in ("eivro", "sing-box", "xray"):
+        copy(stage / f"usr/libexec/eivro/{name}", portable / name, 0o755)
     for name in ("README.md", "PRIVACY.md", "LICENSE", "THIRD_PARTY.md"):
         copy(ROOT / name, portable / name, 0o644)
-    copy(ROOT / "docs/VERIFICATION.md", portable / "docs/VERIFICATION.md", 0o644)
+    for name in ("VERIFICATION.md", "NETWORK-EXITS.md", "UPGRADE.md", "NAME.md", "REFERENCE.md", "DEVELOPMENT.md", "RELEASE.md"):
+        copy(ROOT / "docs" / name, portable / "docs" / name, 0o644)
     copy(ROOT / "vendor/LICENSE", portable / "sing-box.LICENSE", 0o644)
     copy(ROOT / "vendor/xray.LICENSE", portable / "xray.LICENSE", 0o644)
     copy(ROOT / "assets/NotoEmoji.LICENSE", portable / "NotoEmoji.LICENSE", 0o644)
-    copy(ROOT / "packaging/io.velum.Client.desktop", stage / "usr/share/applications/io.velum.Client.desktop", 0o644)
-    copy(ROOT / "assets/io.velum.Client.svg", stage / "usr/share/icons/hicolor/scalable/apps/io.velum.Client.svg", 0o644)
-    copy(ROOT / "packaging/io.velum.tun.policy", stage / "usr/share/polkit-1/actions/io.velum.tun.policy", 0o644)
+    copy(ROOT / "assets/Inter.LICENSE", portable / "Inter.LICENSE", 0o644)
+    copy(ROOT / "packaging/io.eivro.Client.desktop", stage / "usr/share/applications/io.eivro.Client.desktop", 0o644)
+    copy(ROOT / "assets/io.eivro.Client.svg", stage / "usr/share/icons/hicolor/scalable/apps/io.eivro.Client.svg", 0o644)
+    copy(ROOT / "packaging/io.eivro.tun.policy", stage / "usr/share/polkit-1/actions/io.eivro.tun.policy", 0o644)
     for name in ("README.md", "PRIVACY.md", "THIRD_PARTY.md"):
-        copy(ROOT / name, stage / f"usr/share/doc/velum/{name}", 0o644)
-    copy(ROOT / "docs/VERIFICATION.md", stage / "usr/share/doc/velum/docs/VERIFICATION.md", 0o644)
-    copy(ROOT / "LICENSE", stage / "usr/share/licenses/velum/LICENSE", 0o644)
-    copy(ROOT / "vendor/LICENSE", stage / "usr/share/licenses/velum/sing-box.LICENSE", 0o644)
-    copy(ROOT / "vendor/xray.LICENSE", stage / "usr/share/licenses/velum/xray.LICENSE", 0o644)
-    copy(ROOT / "assets/NotoEmoji.LICENSE", stage / "usr/share/licenses/velum/NotoEmoji.LICENSE", 0o644)
-    launcher = stage / "usr/bin/velum"
+        copy(ROOT / name, stage / f"usr/share/doc/eivro/{name}", 0o644)
+    for name in ("VERIFICATION.md", "NETWORK-EXITS.md", "UPGRADE.md", "NAME.md", "REFERENCE.md", "DEVELOPMENT.md", "RELEASE.md"):
+        copy(ROOT / "docs" / name, stage / "usr/share/doc/eivro/docs" / name, 0o644)
+    copy(ROOT / "LICENSE", stage / "usr/share/licenses/eivro/LICENSE", 0o644)
+    copy(ROOT / "vendor/LICENSE", stage / "usr/share/licenses/eivro/sing-box.LICENSE", 0o644)
+    copy(ROOT / "vendor/xray.LICENSE", stage / "usr/share/licenses/eivro/xray.LICENSE", 0o644)
+    copy(ROOT / "assets/NotoEmoji.LICENSE", stage / "usr/share/licenses/eivro/NotoEmoji.LICENSE", 0o644)
+    copy(ROOT / "assets/Inter.LICENSE", stage / "usr/share/licenses/eivro/Inter.LICENSE", 0o644)
+    launcher = stage / "usr/bin/eivro"
     launcher.parent.mkdir(parents=True)
-    launcher.write_text('#!/bin/sh\nexec /usr/libexec/velum/velum "$@"\n')
+    launcher.write_text('#!/bin/sh\nexec /usr/libexec/eivro/eivro "$@"\n')
     launcher.chmod(0o755)
+    # Compatibility entry points only. No old privileged helper or desktop entry remains.
+    for name in ("usr/bin/velum", "usr/libexec/velum/velum"):
+        alias = stage / name
+        alias.parent.mkdir(parents=True, exist_ok=True)
+        alias.write_text('#!/bin/sh\nexec /usr/libexec/eivro/eivro "$@"\n')
+        alias.chmod(0o755)
     archive_tree(portable, DIST / f"{BASE}.tar.gz", BASE)
     create_deb(stage)
     create_rpm(stage)
     if not args.skip_appimage:
         create_appimage(portable)
     create_source()
-    outputs = [DIST / f"velum_{PACKAGE_VERSION}_{ARCH}.deb",
-               DIST / f"velum-{PACKAGE_VERSION}-1.{MACHINE}.rpm",
-               DIST / f"{BASE}.tar.gz", DIST / f"velum-{VERSION}-source.tar.gz"]
+    outputs = [DIST / f"eivro_{PACKAGE_VERSION}_{ARCH}.deb",
+               DIST / f"eivro-{PACKAGE_VERSION}-1.{MACHINE}.rpm",
+               DIST / f"{BASE}.tar.gz", DIST / f"eivro-{VERSION}-source.tar.gz"]
     if not args.skip_appimage and MACHINE == "x86_64":
-        outputs.append(DIST / f"Velum-{VERSION}-{MACHINE}.AppImage")
+        outputs.append(DIST / f"Eivro-{VERSION}-{MACHINE}.AppImage")
     (DIST / "SHA256SUMS").write_text("".join(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n" for p in outputs))
     for p in outputs:
         print(f"{p.name}: {p.stat().st_size / 1024 / 1024:.1f} MiB")

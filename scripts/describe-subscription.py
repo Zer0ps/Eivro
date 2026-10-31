@@ -123,7 +123,7 @@ def main():
         raise ValueError("HTTPS URL required")
     config = "url = " + json.dumps(source) + "\n"
     result = subprocess.run(
-        ["curl", "--silent", "--fail", "--noproxy", "*", "--location", "--max-redirs", "3", "--connect-timeout", "10", "--max-time", "25", "--max-filesize", str(LIMIT), "--proto", "=https", "--proto-redir", "=https", "--user-agent", "Velum/0.2.0", "--header", "Accept-Encoding: identity", "--config", "-"],
+        ["curl", "--silent", "--fail", "--noproxy", "*", "--location", "--max-redirs", "3", "--connect-timeout", "10", "--max-time", "25", "--max-filesize", str(LIMIT), "--proto", "=https", "--proto-redir", "=https", "--user-agent", "Eivro/0.2.0", "--header", "Accept-Encoding: identity", "--config", "-"],
         input=config.encode(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30,
     )
     if result.returncode:

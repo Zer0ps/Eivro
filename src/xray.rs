@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 pub const VERSION: &str = "26.10.21";
-pub const PREFIX: &str = "velum-xray://";
+pub const PREFIX: &str = "eivro-xray://";
 
 fn fields(v: &Value, names: &[&str], context: &str) -> Result<()> {
     let object = v

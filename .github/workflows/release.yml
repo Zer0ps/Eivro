@@ -49,7 +49,7 @@ jobs:
         run: python3 scripts/verify-packages.py
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: velum-linux-x86_64
+          name: eivro-linux-x86_64
           path: |
             dist/*.deb
             dist/*.rpm
@@ -72,7 +72,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: velum-linux-x86_64
+          name: eivro-linux-x86_64
           path: dist
       - name: Verify transferred artifacts
         working-directory: dist
@@ -95,7 +95,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: velum-linux-x86_64
+          name: eivro-linux-x86_64
           path: dist
       - name: Create a draft release after every check passed
         env:
@@ -104,6 +104,6 @@ jobs:
           python3 scripts/check-release.py
           (cd dist && sha256sum --check SHA256SUMS)
           gh release create "$GITHUB_REF_NAME" --verify-tag --draft \
-            --title "Velum $GITHUB_REF_NAME · Stable" \
+            --title "Eivro $GITHUB_REF_NAME · Stable" \
             --notes-file docs/RELEASE.md \
             dist/*.deb dist/*.rpm dist/*.tar.gz dist/SHA256SUMS

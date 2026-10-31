@@ -1,5 +1,10 @@
 //! Explicit connectivity diagnostic: one HTTPS request to example.com per attempt.
 //! Raw subscription bytes enter through stdin and are never written to disk.
+use eivro::{
+    config::{ConnectRequest, Mode},
+    import::parse_uri,
+    process::{Event, Session},
+};
 use std::{
     io::Read,
     net::TcpListener,
@@ -7,27 +12,22 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use velum::{
-    config::{ConnectRequest, Mode},
-    import::parse_uri,
-    process::{Event, Session},
-};
 
-fn run() -> velum::Result<()> {
-    velum::privacy::harden().map_err(|_| "Cannot disable crash dumps")?;
+fn run() -> eivro::Result<()> {
+    eivro::privacy::harden().map_err(|_| "Cannot disable crash dumps")?;
     let kind = std::env::args()
         .nth(1)
         .ok_or("Specify a protocol or transport")?;
     let mut data = Vec::new();
     std::io::stdin()
-        .take(velum::MAX_IMPORT as u64 + 1)
+        .take(eivro::MAX_IMPORT as u64 + 1)
         .read_to_end(&mut data)
         .map_err(|_| "Cannot read subscription")?;
     let profiles = match std::str::from_utf8(&data) {
         Ok(text) if text.trim().starts_with("https://") => {
-            velum::catalog::read_input(text.trim())?.profiles
+            eivro::catalog::read_input(text.trim())?.profiles
         }
-        _ => velum::subscription::import_bytes(&data)?,
+        _ => eivro::subscription::import_bytes(&data)?,
     };
     let mut attempted = 0;
     for profile in profiles {
@@ -45,6 +45,7 @@ fn run() -> velum::Result<()> {
             .port();
         let (session, events) = Session::start(
             ConnectRequest {
+                connections: vec![],
                 probe_port: None,
                 policies: vec![],
                 kill_switch: false,

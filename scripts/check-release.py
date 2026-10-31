@@ -12,4 +12,4 @@ if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
 ref = os.environ.get("GITHUB_REF", "")
 if ref.startswith("refs/tags/") and ref != f"refs/tags/v{version}":
     raise SystemExit("Release tag must match v<Cargo package version>")
-print(f"Release metadata: Velum {version}")
+print(f"Release metadata: Eivro {version}")

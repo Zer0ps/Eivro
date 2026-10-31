@@ -1,12 +1,12 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
-use serde_json::json;
-use std::io::Write;
-use velum::{
+use eivro::{
     catalog::{self, Document, Metadata, UpdatePolicy},
     import::Profile,
     storage::Settings,
     subscription,
 };
+use serde_json::json;
+use std::io::Write;
 fn profile(name: &str, port: u16) -> Profile {
     Profile {
         name: name.into(),
@@ -85,7 +85,7 @@ fn metadata_cannot_introduce_commands_or_unbounded_refresh() {
 fn old_settings_keep_all_servers_selection_and_rules() {
     let mut settings:Settings=serde_json::from_value(json!({"schema":1,"profiles":[profile("A",443),profile("B",444)],"selected":1,"bypass":["*.example.test"],"mode":"tun","accent":[0,0,0]})).unwrap();
     settings.migrate().unwrap();
-    assert_eq!(settings.schema, 3);
+    assert_eq!(settings.schema, 4);
     assert_eq!(settings.subscriptions.len(), 1);
     assert_eq!(settings.selected_profile().unwrap().name, "B");
     assert!(settings.bypass.is_empty());
@@ -142,7 +142,7 @@ fn removed_refresh_target_cannot_replace_a_reimported_source() {
     assert_ne!(current_id, removed_id);
     settings.subscriptions[0].selected = 1;
     settings.routing_profiles[0]
-        .add_addresses("example.test", velum::policy::Action::Direct)
+        .add_addresses("example.test", eivro::policy::Action::Direct)
         .unwrap();
     let before = serde_json::to_value(&settings).unwrap();
     let mut updated = document();
@@ -228,15 +228,15 @@ fn provider_interval_custom_interval_and_manual_are_distinct() {
 #[test]
 fn migration_save_keeps_one_private_rollback_snapshot() {
     use std::os::unix::fs::PermissionsExt;
-    let dir = std::env::temp_dir().join(format!("velum-migration-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("eivro-migration-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("settings.json");
     let bytes = serde_json::to_vec(&json!({"schema":1,"profiles":[profile("A",443)],"selected":0}))
         .unwrap();
     std::fs::write(&path, &bytes).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-    let mut settings = velum::storage::load(&path).unwrap();
-    velum::storage::save(&path, &settings).unwrap();
+    let mut settings = eivro::storage::load(&path).unwrap();
+    eivro::storage::save(&path, &settings).unwrap();
     let backup = dir.join("settings-before-alpha.json");
     assert_eq!(std::fs::read(&backup).unwrap(), bytes);
     assert_eq!(
@@ -244,9 +244,9 @@ fn migration_save_keeps_one_private_rollback_snapshot() {
         0o600
     );
     settings.routing_profiles[0]
-        .add_addresses("example.test", velum::policy::Action::Direct)
+        .add_addresses("example.test", eivro::policy::Action::Direct)
         .unwrap();
-    velum::storage::save(&path, &settings).unwrap();
+    eivro::storage::save(&path, &settings).unwrap();
     assert_eq!(std::fs::read(&backup).unwrap(), bytes);
     std::fs::remove_dir_all(&dir).unwrap();
 }

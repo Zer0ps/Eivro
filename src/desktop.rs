@@ -17,6 +17,7 @@ pub enum Event {
     Network(bool),
     Sleep(bool),
     MonitorUnavailable,
+    DnsChanged,
 }
 #[derive(Clone)]
 pub struct Sink {
@@ -64,6 +65,10 @@ impl Desktop {
                 network_sink.send(Event::MonitorUnavailable);
             }
         });
+        let dns_sink = sink.clone();
+        std::thread::spawn(move || {
+            let _ = dns_events(&dns_sink);
+        });
         std::thread::spawn(move || {
             let _ = sleep_events(&sink);
         });
@@ -107,10 +112,10 @@ struct Tray {
 }
 impl ksni::Tray for Tray {
     fn id(&self) -> String {
-        "io.velum.Client".into()
+        "io.eivro.Client".into()
     }
     fn title(&self) -> String {
-        format!("Velum · {}", self.status)
+        format!("Eivro · {}", self.status)
     }
     fn activate(&mut self, _: i32, _: i32) {
         self.sink.send(Event::Show);
@@ -131,10 +136,10 @@ impl ksni::Tray for Tray {
                 if dx * dx + dy * dy < 225.0 {
                     let i = (y * 32 + x) * 4;
                     data[i..i + 4].copy_from_slice(&[255, color[0], color[1], color[2]]);
-                    if (8..=22).contains(&x)
-                        && (8..=24).contains(&y)
-                        && ((y as f32 - (2.0 * (x as f32 - 8.0) + 9.0)).abs() < 2.8
-                            || (y as f32 - (-2.0 * (x as f32 - 16.0) + 24.0)).abs() < 2.8)
+                    if ((8..=11).contains(&x) && (8..=24).contains(&y))
+                        || ((8..=23).contains(&x)
+                            && ((8..=11).contains(&y) || (21..=24).contains(&y)))
+                        || ((8..=19).contains(&x) && (15..=17).contains(&y))
                     {
                         data[i + 1..i + 4].copy_from_slice(&[20, 35, 30]);
                     }
@@ -157,7 +162,7 @@ impl ksni::Tray for Tray {
             }
             .into(),
             StandardItem {
-                label: "Открыть Velum".into(),
+                label: "Открыть Eivro".into(),
                 activate: Box::new(|s: &mut Self| s.sink.send(Event::Show)),
                 ..Default::default()
             }
@@ -175,7 +180,7 @@ impl ksni::Tray for Tray {
             .into(),
             ksni::MenuItem::Separator,
             StandardItem {
-                label: "Завершить Velum".into(),
+                label: "Завершить Eivro".into(),
                 activate: Box::new(|s: &mut Self| s.sink.send(Event::Quit)),
                 ..Default::default()
             }
@@ -250,6 +255,33 @@ fn network(sink: &Sink) -> zbus::Result<()> {
     }
     Ok(())
 }
+fn dns_events(sink: &Sink) -> zbus::Result<()> {
+    let c = zbus::blocking::Connection::system()?;
+    let rule = zbus::MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .sender("org.freedesktop.resolve1")?
+        .interface("org.freedesktop.DBus.Properties")?
+        .member("PropertiesChanged")?
+        .build();
+    for message in zbus::blocking::MessageIterator::for_match_rule(rule, &c, Some(16))? {
+        let message = message?;
+        let (iface, changed, invalid): (
+            String,
+            std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
+            Vec<String>,
+        ) = message.body().deserialize()?;
+        if matches!(
+            iface.as_str(),
+            "org.freedesktop.resolve1.Link" | "org.freedesktop.resolve1.Manager"
+        ) && ["DNS", "DNSEx"]
+            .iter()
+            .any(|key| changed.contains_key(*key) || invalid.iter().any(|v| v == key))
+        {
+            sink.send(Event::DnsChanged);
+        }
+    }
+    Ok(())
+}
 fn sleep_events(sink: &Sink) -> zbus::Result<()> {
     let c = zbus::blocking::Connection::system()?;
     let rule = zbus::MatchRule::builder()
@@ -272,8 +304,59 @@ pub fn autostart_path() -> crate::Result<PathBuf> {
         .filter(|p| p.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".config")))
         .ok_or("Нет каталога автозапуска.")?;
-    Ok(base.join("autostart/io.velum.Client.desktop"))
+    Ok(base.join("autostart/io.eivro.Client.desktop"))
 }
+pub fn migrate_autostart() -> crate::Result<()> {
+    let path = autostart_path()?;
+    let old = path.with_file_name("io.velum.Client.desktop");
+    let exe = std::env::current_exe().map_err(|_| "Нет пути Eivro.")?;
+    migrate_autostart_at(&old, &path, &exe)
+}
+fn migrate_autostart_at(old: &Path, new: &Path, exe: &Path) -> crate::Result<()> {
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(old)
+    {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err("Не удалось проверить прежний автозапуск.".into()),
+    };
+    let meta = file
+        .metadata()
+        .map_err(|_| "Не удалось проверить прежний автозапуск.")?;
+    if !meta.is_file()
+        || meta.uid() != unsafe { libc::geteuid() }
+        || meta.mode() & 0o022 != 0
+        || meta.len() > 65536
+    {
+        return Err("Небезопасный файл прежнего автозапуска.".into());
+    }
+    let mut text = String::new();
+    file.take(65537)
+        .read_to_string(&mut text)
+        .map_err(|_| "Не удалось прочитать прежний автозапуск.")?;
+    if !text.lines().any(|s| s == "Name=Velum")
+        || !text.lines().any(|s| s == "Icon=io.velum.Client")
+    {
+        return Err("Прежний автозапуск настроен вручную и оставлен без изменений.".into());
+    }
+    // Keep the original for rollback, with a suffix desktop launchers ignore.
+    let backup = old.with_extension("desktop.before-eivro");
+    if backup.exists() {
+        return Err("Старый автозапуск сохранён: резервная копия уже существует.".into());
+    }
+    let enabled = !text
+        .lines()
+        .any(|line| matches!(line, "Hidden=true" | "X-GNOME-Autostart-enabled=false"));
+    if !new.exists() && enabled {
+        set_autostart(new, exe, true)?;
+    }
+    std::fs::rename(old, backup).map_err(|_| "Не удалось отключить прежний автозапуск.".into())
+}
+
 pub fn set_autostart(path: &Path, executable: &Path, enabled: bool) -> crate::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -287,7 +370,7 @@ pub fn set_autostart(path: &Path, executable: &Path, enabled: bool) -> crate::Re
         let s = executable
             .to_str()
             .filter(|s| !s.chars().any(char::is_control))
-            .ok_or("Некорректный путь Velum.")?;
+            .ok_or("Некорректный путь Eivro.")?;
         let escaped = s
             .replace('\\', "\\\\")
             .replace('"', "\\\"")
@@ -305,7 +388,7 @@ pub fn set_autostart(path: &Path, executable: &Path, enabled: bool) -> crate::Re
                 .custom_flags(libc::O_NOFOLLOW)
                 .open(&temp)
                 .map_err(|_| "Не удалось записать автозапуск.")?;
-            write!(file,"[Desktop Entry]\nType=Application\nName=Velum\nExec=\"{escaped}\" --background\nIcon=io.velum.Client\nTerminal=false\nX-GNOME-Autostart-enabled=true\n").map_err(|_|"Не удалось записать автозапуск.")?;
+            write!(file,"[Desktop Entry]\nType=Application\nName=Eivro\nExec=\"{escaped}\" --background\nIcon=io.eivro.Client\nTerminal=false\nX-GNOME-Autostart-enabled=true\n").map_err(|_|"Не удалось записать автозапуск.")?;
             file.sync_all()
                 .map_err(|_| "Не удалось сохранить автозапуск.")?;
             std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600))
@@ -382,14 +465,14 @@ mod tests {
     }
     #[test]
     fn tray_and_network_signals_in_private_dbus() {
-        if std::env::var_os("VELUM_DESKTOP_TEST").is_none() {
+        if std::env::var_os("EIVRO_DESKTOP_TEST").is_none() {
             let output = std::process::Command::new("dbus-run-session")
                 .args([
                     "--",
                     "sh",
                     "-c",
                     "DBUS_SYSTEM_BUS_ADDRESS=\"$DBUS_SESSION_BUS_ADDRESS\" exec \"$@\"",
-                    "velum-test",
+                    "eivro-test",
                 ])
                 .arg(std::env::current_exe().unwrap())
                 .args([
@@ -397,7 +480,7 @@ mod tests {
                     "desktop::tests::tray_and_network_signals_in_private_dbus",
                     "--nocapture",
                 ])
-                .env("VELUM_DESKTOP_TEST", "1")
+                .env("EIVRO_DESKTOP_TEST", "1")
                 .output()
                 .unwrap();
             assert!(
@@ -420,6 +503,8 @@ mod tests {
             .name("org.freedesktop.NetworkManager")
             .unwrap()
             .name("org.freedesktop.login1")
+            .unwrap()
+            .name("org.freedesktop.resolve1")
             .unwrap()
             .serve_at(
                 "/StatusNotifierWatcher",
@@ -492,6 +577,20 @@ mod tests {
             )
             .unwrap();
         next(&desktop, |e| matches!(e, Event::Sleep(false)));
+        connection
+            .emit_signal(
+                None::<&str>,
+                "/org/freedesktop/resolve1/link/_42",
+                "org.freedesktop.DBus.Properties",
+                "PropertiesChanged",
+                &(
+                    "org.freedesktop.resolve1.Link",
+                    std::collections::HashMap::<String, zbus::zvariant::OwnedValue>::new(),
+                    vec!["DNS"],
+                ),
+            )
+            .unwrap();
+        next(&desktop, |e| matches!(e, Event::DnsChanged));
         let path: zbus::zvariant::OwnedObjectPath = proxy.get_property("Menu").unwrap();
         let menu = zbus::blocking::Proxy::new(
             &connection,
@@ -514,7 +613,7 @@ mod tests {
                 .get("label")
                 .and_then(|v| <&str>::try_from(v).ok())
                 .unwrap_or("");
-            if label == "Отключить" || label == "Завершить Velum" {
+            if label == "Отключить" || label == "Завершить Eivro" {
                 menu.call::<_, _, ()>(
                     "Event",
                     &(id, "clicked", zbus::zvariant::Value::from(0i32), 0u32),
@@ -534,13 +633,72 @@ mod tests {
     }
     #[test]
     fn autostart_is_opt_in_and_escapes_exec_fields() {
-        let dir = std::env::temp_dir().join(format!("velum-startup-{}", std::process::id()));
-        let path = dir.join("autostart/velum.desktop");
-        set_autostart(&path, Path::new("/some path/velum%name"), true).unwrap();
+        let dir = std::env::temp_dir().join(format!("eivro-startup-{}", std::process::id()));
+        let path = dir.join("autostart/eivro.desktop");
+        set_autostart(&path, Path::new("/some path/eivro%name"), true).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("Exec=\"/some path/velum%%name\" --background"));
+        assert!(text.contains("Exec=\"/some path/eivro%%name\" --background"));
         set_autostart(&path, Path::new("/irrelevant"), false).unwrap();
         assert!(!path.exists());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn legacy_autostart_migration_preserves_intent_and_existing_current_entry() {
+        use std::os::unix::fs::PermissionsExt;
+        let base =
+            std::env::temp_dir().join(format!("eivro-startup-migrate-{}", std::process::id()));
+        std::fs::create_dir(&base).unwrap();
+        for (case, enabled, existing) in [
+            ("enabled", true, false),
+            ("disabled", false, false),
+            ("current", true, true),
+        ] {
+            let dir = base.join(case);
+            std::fs::create_dir(&dir).unwrap();
+            let old = dir.join("io.velum.Client.desktop");
+            let new = dir.join("io.eivro.Client.desktop");
+            let text = format!(
+                "[Desktop Entry]\nName=Velum\nIcon=io.velum.Client\nExec=/usr/libexec/velum/velum --background\nHidden={}\n",
+                !enabled
+            );
+            std::fs::write(&old, &text).unwrap();
+            std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o600)).unwrap();
+            if existing {
+                std::fs::write(&new, b"existing-user-entry").unwrap();
+            }
+            migrate_autostart_at(&old, &new, Path::new("/usr/libexec/eivro/eivro")).unwrap();
+            assert!(!old.exists());
+            assert_eq!(
+                std::fs::read_to_string(old.with_extension("desktop.before-eivro")).unwrap(),
+                text
+            );
+            if existing {
+                assert_eq!(std::fs::read(&new).unwrap(), b"existing-user-entry");
+            } else if enabled {
+                let updated = std::fs::read_to_string(&new).unwrap();
+                assert!(updated.contains("Name=Eivro\n"));
+                assert!(updated.contains("Exec=\"/usr/libexec/eivro/eivro\" --background"));
+            } else {
+                assert!(!new.exists());
+            }
+            migrate_autostart_at(&old, &new, Path::new("/irrelevant")).unwrap();
+        }
+        std::fs::remove_dir_all(base).unwrap();
+    }
+    #[test]
+    fn unrelated_or_symlinked_autostart_is_not_rewritten() {
+        let base =
+            std::env::temp_dir().join(format!("eivro-startup-refuse-{}", std::process::id()));
+        std::fs::create_dir(&base).unwrap();
+        let old = base.join("io.velum.Client.desktop");
+        let new = base.join("io.eivro.Client.desktop");
+        std::fs::write(&old, b"[Desktop Entry]\nName=Other\n").unwrap();
+        assert!(migrate_autostart_at(&old, &new, Path::new("/eivro")).is_err());
+        assert!(old.exists() && !new.exists());
+        std::fs::rename(&old, base.join("other")).unwrap();
+        std::os::unix::fs::symlink(base.join("other"), &old).unwrap();
+        assert!(migrate_autostart_at(&old, &new, Path::new("/eivro")).is_err());
+        assert!(!new.exists());
+        std::fs::remove_dir_all(base).unwrap();
     }
 }

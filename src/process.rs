@@ -21,9 +21,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub const INSTALLED_CORE: &str = "/usr/libexec/velum/sing-box";
-pub const HELPER: &str = "/usr/libexec/velum/velum-tun";
-pub const INSTALLED_XRAY: &str = "/usr/libexec/velum/xray";
+pub const INSTALLED_CORE: &str = "/usr/libexec/eivro/sing-box";
+pub const HELPER: &str = "/usr/libexec/eivro/eivro-tun";
+pub const INSTALLED_XRAY: &str = "/usr/libexec/eivro/xray";
 pub const MAX_REQUEST: usize = 128 * 1024;
 
 #[derive(Clone, Debug)]
@@ -55,7 +55,7 @@ fn binary_path(name: &str, installed: &str) -> Result<PathBuf> {
             return Ok(path);
         }
     }
-    Err(format!("Ядро {name} не найдено. Обновите сборку Velum."))
+    Err(format!("Ядро {name} не найдено. Обновите сборку Eivro."))
 }
 
 pub fn helper_available() -> bool {
@@ -120,7 +120,7 @@ fn version_check(core: &Path) -> Result<()> {
             .is_some_and(|s| s == format!("sing-box version {CORE_VERSION}"))
     {
         return Err(format!(
-            "Требуется sing-box {CORE_VERSION}. Используйте ядро из сборки Velum."
+            "Требуется sing-box {CORE_VERSION}. Используйте ядро из сборки Eivro."
         ));
     }
     Ok(())
@@ -137,7 +137,7 @@ fn xray_version_check(core: &Path) -> Result<()> {
             .starts_with(&format!("Xray {} ", crate::xray::VERSION))
     {
         return Err(format!(
-            "Требуется Xray {} из сборки Velum.",
+            "Требуется Xray {} из сборки Eivro.",
             crate::xray::VERSION
         ));
     }
@@ -196,6 +196,7 @@ pub fn validate_profiles(profiles: &[Profile]) -> Result<()> {
         version_check(&core)?;
         let mut config = generate(
             &ConnectRequest {
+                connections: vec![],
                 probe_port: None,
                 policies: vec![],
                 kill_switch: false,
@@ -440,6 +441,7 @@ fn pin_xray_uplink(
                 .filter(|r| {
                     r["dev"].as_str().is_some_and(|d| {
                         d != "lo"
+                            && d != "eivro0"
                             && d != "velum0"
                             && !Path::new("/sys/class/net")
                                 .join(d)
@@ -496,7 +498,15 @@ fn pin_xray_uplink(
 
 pub fn spawn_core(core: &Path, req: &ConnectRequest, mode: Mode) -> Result<Child> {
     version_check(core)?;
-    spawn_configuration(core, &generate(req, mode)?)
+    let links = if req.connections.is_empty() {
+        Vec::new()
+    } else {
+        crate::network::interfaces()
+    };
+    spawn_configuration(
+        core,
+        &crate::config::generate_with_network(req, mode, &links)?,
+    )
 }
 
 pub(crate) fn spawn_configuration(core: &Path, config: &serde_json::Value) -> Result<Child> {
@@ -633,7 +643,7 @@ impl Session {
         }
         generate(&req, mode)?;
         if mode == Mode::Tun && !helper_available() {
-            return Err("Для TUN установите RPM/DEB: нужен системный помощник Velum.".into());
+            return Err("Для TUN установите RPM/DEB: нужен системный помощник Eivro.".into());
         }
         let (stop, watch) =
             UnixStream::pair().map_err(|_| "Не удалось создать канал управления.")?;
@@ -690,9 +700,9 @@ fn supervise(
             .stdout(Stdio::piped())
             .output()
             .map_err(|_| "Не удалось проверить версию помощника TUN.")?;
-        if output.stdout != format!("Velum TUN {}\n", env!("CARGO_PKG_VERSION")).as_bytes() {
+        if output.stdout != format!("Eivro TUN {}\n", env!("CARGO_PKG_VERSION")).as_bytes() {
             return Err(
-                "Обновите RPM/DEB Velum: версия помощника TUN не совпадает с приложением.".into(),
+                "Обновите RPM/DEB Eivro: версия помощника TUN не совпадает с приложением.".into(),
             );
         }
         notify(Event::Progress("Запрос прав TUN…"));
@@ -838,31 +848,32 @@ pub fn tun_preflight() -> Result<()> {
             let dev = r["dev"].as_str().unwrap_or("");
             let dst = r["dst"].as_str().unwrap_or("");
             ["default", "0.0.0.0/1", "128.0.0.0/1", "::/1", "8000::/1"].contains(&dst)
-                && (dev == "velum0"
+                && (dev == "eivro0"
+                    || dev == "velum0"
                     || Path::new("/sys/class/net")
                         .join(dev)
                         .join("tun_flags")
                         .exists())
         })
     }) {
-        return Err("Уже активен другой VPN/TUN. Отключите его перед подключением Velum.".into());
+        return Err("Уже активен другой VPN/TUN. Отключите его перед подключением Eivro.".into());
     }
     Ok(())
 }
 
 pub(crate) fn app_path() -> Result<PathBuf> {
-    let exe = std::env::current_exe().map_err(|_| "Нет пути Velum.")?;
-    if exe.file_name().is_some_and(|s| s == "velum") {
+    let exe = std::env::current_exe().map_err(|_| "Нет пути Eivro.")?;
+    if exe.file_name().is_some_and(|s| s == "eivro") {
         return Ok(exe);
     }
     // Integration tests and diagnostic examples are one directory below the GUI.
     for dir in exe.parent().into_iter().flat_map(|p| p.ancestors()).take(3) {
-        let path = dir.join("velum");
+        let path = dir.join("eivro");
         if path.is_file() {
             return Ok(path);
         }
     }
-    Err("Не найден исполняемый файл Velum.".into())
+    Err("Не найден исполняемый файл Eivro.".into())
 }
 
 fn check_connection(port: u16, watch: &UnixStream, core: i32, xray: i32) -> Result<bool> {
@@ -1014,7 +1025,7 @@ impl ProxyGuard {
         match status.code() {
             Some(0)=>Ok(()),
             Some(2)=>Err("Прокси изменён другим приложением. Его настройки оставлены без изменений.".into()),
-            _=>Err("Соединение остановлено, но восстановить прокси GNOME не удалось. Перезапустите Velum для повторного восстановления.".into()),
+            _=>Err("Соединение остановлено, но восстановить прокси GNOME не удалось. Перезапустите Eivro для повторного восстановления.".into()),
         }
     }
 }
@@ -1032,7 +1043,7 @@ pub fn helper_compatible() -> bool {
             .output()
             .is_ok_and(|o| {
                 o.status.success()
-                    && o.stdout == format!("Velum TUN {}\n", env!("CARGO_PKG_VERSION")).as_bytes()
+                    && o.stdout == format!("Eivro TUN {}\n", env!("CARGO_PKG_VERSION")).as_bytes()
             })
 }
 
@@ -1041,14 +1052,14 @@ pub fn install_package_path() -> Option<PathBuf> {
     let arch = std::env::consts::ARCH;
     let version = env!("CARGO_PKG_VERSION").replace('-', "~");
     let name = if Path::new("/usr/bin/dnf").exists() {
-        format!("velum-{version}-1.{arch}.rpm")
+        format!("eivro-{version}-1.{arch}.rpm")
     } else {
         let arch = match arch {
             "x86_64" => "amd64",
             "aarch64" => "arm64",
             _ => return None,
         };
-        format!("velum_{version}_{arch}.deb")
+        format!("eivro_{version}_{arch}.deb")
     };
     exe.parent()?
         .ancestors()
@@ -1088,7 +1099,7 @@ mod privilege_tests {
     use super::*;
     #[test]
     fn xray_mark_capability_is_limited_in_user_namespace() {
-        if std::env::var_os("VELUM_CAP_TEST").is_none() {
+        if std::env::var_os("EIVRO_CAP_TEST").is_none() {
             let out = Command::new("unshare")
                 .args(["--user", "--map-root-user", "--net"])
                 .arg(std::env::current_exe().unwrap())
@@ -1097,7 +1108,7 @@ mod privilege_tests {
                     "process::privilege_tests::xray_mark_capability_is_limited_in_user_namespace",
                     "--nocapture",
                 ])
-                .env("VELUM_CAP_TEST", "1")
+                .env("EIVRO_CAP_TEST", "1")
                 .output()
                 .unwrap();
             assert!(

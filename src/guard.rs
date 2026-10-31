@@ -89,7 +89,7 @@ pub fn ruleset() -> String {
  chain output {{
   type filter hook output priority -150; policy drop;
   oifname "lo" accept
-  oifname "velum0" accept
+  oifname "eivro0" accept
   meta mark {MARK} accept
   meta nfproto ipv4 udp sport 68 udp dport 67 accept
   meta nfproto ipv6 ip6 daddr ff02::1:2 udp sport 546 udp dport 547 accept
@@ -97,8 +97,8 @@ pub fn ruleset() -> String {
  }}
  chain forward {{
   type filter hook forward priority -150; policy drop;
-  oifname "velum0" accept
-  iifname "velum0" accept
+  oifname "eivro0" accept
+  iifname "eivro0" accept
  }}
 }}
 "#
@@ -254,7 +254,7 @@ mod tests {
     }
     #[test]
     fn kernel_guard_isolated_network_namespace() {
-        if std::env::var_os("VELUM_GUARD_CHILD").is_none() {
+        if std::env::var_os("EIVRO_GUARD_CHILD").is_none() {
             let output = Command::new("unshare")
                 .args(["--user", "--map-root-user", "--net", "--mount"])
                 .arg(std::env::current_exe().unwrap())
@@ -263,9 +263,9 @@ mod tests {
                     "guard::tests::kernel_guard_isolated_network_namespace",
                     "--nocapture",
                 ])
-                .env("VELUM_GUARD_CHILD", "1")
+                .env("EIVRO_GUARD_CHILD", "1")
                 .env(
-                    "VELUM_PARENT_NETNS",
+                    "EIVRO_PARENT_NETNS",
                     std::fs::read_link("/proc/self/ns/net").unwrap(),
                 )
                 .output()
@@ -281,7 +281,7 @@ mod tests {
         // Assert isolation before any mutation. No TUN, D-Bus or host DNS is used.
         assert_ne!(
             std::fs::read_link("/proc/self/ns/net").unwrap(),
-            std::path::PathBuf::from(std::env::var_os("VELUM_PARENT_NETNS").unwrap())
+            std::path::PathBuf::from(std::env::var_os("EIVRO_PARENT_NETNS").unwrap())
         );
         run(&["ip", "link", "set", "lo", "up"]);
         run(&["ip", "link", "add", "guard-test0", "type", "dummy"]);
