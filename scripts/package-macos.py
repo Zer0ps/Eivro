@@ -81,7 +81,13 @@ def main():
     copy(package, image_root / package.name)
     (image_root / 'Read me.txt').write_text('Eivro for macOS 13 or later.\nOpen the .pkg installer, then launch Eivro from Applications.\nThis preview is ad-hoc signed, not notarized by Apple.\nVPN, DNS recovery and energy use require validation on a Mac before a stable macOS release.\n')
     dmg = dist / f'Eivro-{VERSION}-macos-{machine}.dmg'
-    run('hdiutil', 'create', '-ov', '-format', 'UDZO', '-volname', 'Eivro', '-srcfolder', image_root, dmg)
+    # hdiutil's automatic source-folder sizing can leave too little room for a
+    # large PKG on the temporary filesystem. Empty space compresses away in UDZO.
+    payload = sum(p.stat().st_size for p in image_root.iterdir() if p.is_file())
+    image_mib = (payload + 1024 * 1024 - 1) // (1024 * 1024) + 64
+    print(f'DMG volume: {image_mib} MiB; host free: {shutil.disk_usage(work).free // (1024 * 1024)} MiB', flush=True)
+    run('hdiutil', 'create', '-ov', '-format', 'UDZO', '-fs', 'HFS+',
+        '-size', f'{image_mib}m', '-volname', 'Eivro', '-srcfolder', image_root, dmg)
     checksums = dist / f'SHA256SUMS-macos-{machine}'
     checksums.write_text(''.join(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n' for p in (package, dmg)))
     print(package)

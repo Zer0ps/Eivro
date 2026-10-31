@@ -112,7 +112,7 @@ jobs:
           cargo fmt --all --check
           cargo clippy --locked --lib --bins -- -D warnings
           cargo test --locked --lib --bin eivro
-          cargo test --locked --test catalog --test policy --test subscriptions --test subscription_compat
+          cargo test --locked --test catalog --test policy --test subscriptions --test subscription_compat --test resolver
       - name: Build application and installer
         run: ./scripts/build-macos.sh
       - name: Verify and install in the disposable runner

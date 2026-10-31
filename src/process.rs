@@ -878,23 +878,21 @@ pub fn tun_preflight() -> Result<()> {
 }
 
 pub(crate) fn app_path() -> Result<PathBuf> {
-    #[cfg(target_os = "macos")]
-    return std::env::current_exe().map_err(|_| "Не найден исполняемый файл Eivro.".into());
-    #[cfg(target_os = "linux")]
+    let exe = std::env::current_exe().map_err(|_| "Нет пути Eivro.")?;
+    if exe
+        .file_name()
+        .is_some_and(|s| s == "eivro" || (cfg!(target_os = "macos") && s == "eivro-tun"))
     {
-        let exe = std::env::current_exe().map_err(|_| "Нет пути Eivro.")?;
-        if exe.file_name().is_some_and(|s| s == "eivro") {
-            return Ok(exe);
-        }
-        // Integration tests and diagnostic examples are one directory below the GUI.
-        for dir in exe.parent().into_iter().flat_map(|p| p.ancestors()).take(3) {
-            let path = dir.join("eivro");
-            if path.is_file() {
-                return Ok(path);
-            }
-        }
-        Err("Не найден исполняемый файл Eivro.".into())
+        return Ok(exe);
     }
+    // Integration tests and diagnostic examples are one directory below the GUI.
+    for dir in exe.parent().into_iter().flat_map(|p| p.ancestors()).take(3) {
+        let path = dir.join("eivro");
+        if path.is_file() {
+            return Ok(path);
+        }
+    }
+    Err("Не найден исполняемый файл Eivro.".into())
 }
 
 #[cfg(target_os = "linux")]

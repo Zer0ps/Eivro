@@ -72,6 +72,7 @@ fn malformed_worker_input_does_not_echo_secrets() {
     assert!(output.stdout.is_empty() && output.stderr.is_empty());
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn stalled_system_dns_bounds_subscription_and_session_cancellation() {
     use eivro::{
