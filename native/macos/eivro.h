@@ -11,4 +11,4 @@ char *eivro_settings_plan(uint16_t, bool);
 bool eivro_settings_apply(const char *, bool);
 const void *eivro_authorize(uint8_t *);
 bool eivro_verify_authorization(const uint8_t *);
-void eivro_authorization_free(void *);
+void eivro_authorization_free(const void *);

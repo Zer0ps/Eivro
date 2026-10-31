@@ -521,3 +521,51 @@ pub(crate) fn original_dns(links: &mut [crate::network::Interface]) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // This test changes only the disposable macOS runner's network preferences.
+    // It is never part of cargo test's default run or an installed executable.
+    #[test]
+    #[ignore = "requires root on a disposable macOS GitHub Actions runner"]
+    fn native_preferences_restore_and_recover_after_abandoned_lease() {
+        assert_eq!(unsafe { libc::geteuid() }, 0);
+        assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+        assert!(!Path::new(JOURNAL).exists());
+        for tun in [false, true] {
+            let before = native::settings_plan(32080, tun).unwrap();
+            let expected: serde_json::Value = serde_json::from_str(&before).unwrap();
+            let assert_state = |field: &str| {
+                let current: serde_json::Value =
+                    serde_json::from_str(&native::settings_plan(32080, tun).unwrap()).unwrap();
+                for entry in expected.as_array().unwrap() {
+                    let found = current
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|row| row["service"] == entry["service"])
+                        .expect("network service disappeared");
+                    assert_eq!(found["before"], entry[field]);
+                    assert_eq!(found["before_enabled"], entry[format!("{field}_enabled")]);
+                }
+            };
+            let mut lease = Lease::apply(before.clone(), None).unwrap();
+            assert_state("applied");
+            lease.restore().unwrap();
+            assert_state("before");
+            assert!(!Path::new(JOURNAL).exists());
+
+            let mut lease = Lease::apply(before, None).unwrap();
+            assert_state("applied");
+            // Model a helper restart: its in-memory guard is gone but the
+            // durable recovery plan remains. Startup must restore that plan.
+            lease.active = false;
+            drop(lease);
+            recover().unwrap();
+            assert_state("before");
+            assert!(!Path::new(JOURNAL).exists());
+        }
+    }
+}
