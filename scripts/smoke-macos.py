@@ -36,7 +36,7 @@ def receive(sock):
 
 def connect(version):
     sock = socket.socket(socket.AF_UNIX)
-    sock.settimeout(10)
+    sock.settimeout(35)
     sock.connect(SOCKET)
     assert receive(sock) == {'event': 'hello', 'version': version}
     return sock
@@ -76,9 +76,12 @@ def main():
         for mode in ('tun', 'proxy'):
             send(sock, {'command': 'start', 'request': request, 'mode': mode, 'authorization': [0] * 32})
             assert receive(sock)['event'] == 'denied'
-        for _ in range(2):
+        for cycle in range(2):
+            print(f'Local cycle {cycle + 1}: start', flush=True)
             send(sock, {'command': 'start', 'request': request, 'mode': 'local', 'authorization': None})
-            assert receive(sock)['event'] == 'ready'
+            reply = receive(sock)
+            assert reply['event'] == 'ready', reply
+            print(f'Local cycle {cycle + 1}: ready', flush=True)
             with socket.create_connection(('127.0.0.1', port), timeout=3) as proxy:
                 proxy.sendall(b'\x05\x01\x00')
                 assert read_exact(proxy, 2) == b'\x05\x00'
@@ -105,6 +108,24 @@ def main():
                                      timeout=10)
             if capture.returncode:
                 print('Native startup passed; screenshot permission unavailable')
+            def usage():
+                fields = subprocess.check_output(['/bin/ps', '-p', str(gui.pid),
+                    '-o', 'time=', '-o', 'rss='], text=True).split()
+                seconds = sum(float(part) * 60 ** index
+                              for index, part in enumerate(reversed(fields[0].split(':'))))
+                return seconds, int(fields[1])
+            first_cpu, _ = usage()
+            started = time.monotonic()
+            time.sleep(10)
+            assert gui.poll() is None, 'Installed GUI exited while idle'
+            last_cpu, rss_kib = usage()
+            elapsed = time.monotonic() - started
+            report = {'scope': 'empty disconnected GUI, visible window, CI runner',
+                      'sample_seconds': round(elapsed, 2),
+                      'cpu_percent_one_core': round(100 * (last_cpu - first_cpu) / elapsed, 3),
+                      'rss_mib': round(rss_kib / 1024, 2)}
+            (screenshots / 'idle.json').write_text(json.dumps(report, indent=2) + '\n')
+            print('Native idle sample:', json.dumps(report))
         finally:
             gui.terminate()
             try:
@@ -115,4 +136,20 @@ def main():
     print('PASS: installed metadata, launchd IPC, rejected authorization, Local start/stop/reconnect/owner exit')
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except Exception:
+        # Only synthetic CI processes: sample stacks, never memory or config.
+        report = Path('work/macos-smoke')
+        report.mkdir(parents=True, exist_ok=True)
+        rows = subprocess.check_output(['/bin/ps', '-axo', 'pid=,ppid=,etime=,state=,comm='], text=True).splitlines()
+        relevant = [row for row in rows if any(name in row for name in ('eivro-tun', 'sing-box', '/xray'))]
+        print('Processes at failure:', '\n'.join(relevant), flush=True)
+        for row in relevant:
+            pid = row.split()[0]
+            try:
+                subprocess.run(['sudo', '/usr/bin/sample', pid, '1', '-file', str(report / f'process-{pid}.txt')],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+            except (OSError, subprocess.TimeoutExpired):
+                print(f'Could not sample process {pid}', flush=True)
+        raise

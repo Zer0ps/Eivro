@@ -9,6 +9,7 @@ unsafe extern "C" {
     ) -> *mut c_void;
     pub fn eivro_desktop_update(handle: *mut c_void, running: bool, wanted: bool);
     pub fn eivro_desktop_stop(handle: *mut c_void);
+    pub fn eivro_desktop_appearance(dark: bool);
     fn eivro_interfaces() -> *mut c_char;
     fn eivro_uplink() -> *mut c_char;
     fn eivro_applications() -> *mut c_char;

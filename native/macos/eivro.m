@@ -523,6 +523,12 @@ void eivro_desktop_update(void *handle, bool running, bool wanted) {
         desktop.mainToggle.title = title;
     }
 }
+void eivro_desktop_appearance(bool dark) {
+    @autoreleasepool {
+        NSApp.appearance =
+            [NSAppearance appearanceNamed:dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+    }
+}
 void eivro_desktop_stop(void *handle) {
     @autoreleasepool {
         EivroDesktop *desktop = (__bridge_transfer EivroDesktop *)handle;

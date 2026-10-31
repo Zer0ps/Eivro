@@ -4,6 +4,7 @@
 void *eivro_desktop_start(void (*callback)(void *, int, bool), void *context);
 void eivro_desktop_update(void *, bool, bool);
 void eivro_desktop_stop(void *);
+void eivro_desktop_appearance(bool dark);
 char *eivro_interfaces(void);
 char *eivro_uplink(void);
 char *eivro_applications(void);

@@ -30,6 +30,7 @@ pub struct Desktop {
     handle: *mut c_void,
     _sink: Box<Sink>,
     last: Option<(bool, bool)>,
+    dark: Option<bool>,
 }
 extern "C" fn callback(context: *mut c_void, code: i32, state: bool) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -64,6 +65,15 @@ impl Desktop {
             handle,
             _sink: sink,
             last: None,
+            dark: None,
+        }
+    }
+    pub fn appearance(&mut self, dark: bool) {
+        if !self.handle.is_null() && self.dark != Some(dark) {
+            unsafe {
+                native::eivro_desktop_appearance(dark);
+            }
+            self.dark = Some(dark);
         }
     }
     pub fn update(&mut self, running: bool, wanted: bool, _: &str) {

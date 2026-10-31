@@ -593,6 +593,8 @@ impl eframe::App for App {
                 "Отключено"
             };
             desktop.update(self.running, self.want_connected, status);
+            #[cfg(target_os = "macos")]
+            desktop.appearance(self.settings.theme == Theme::Dark);
         }
         self.handle_close(ctx);
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
