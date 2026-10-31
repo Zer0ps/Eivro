@@ -14,9 +14,9 @@ unsafe extern "C" {
     fn eivro_applications() -> *mut c_char;
     fn eivro_settings_plan(port: u16, tun: bool) -> *mut c_char;
     fn eivro_settings_apply(plan: *const c_char, restore: bool) -> bool;
-    fn eivro_authorize(token: *mut u8) -> *mut c_void;
+    fn eivro_authorize(token: *mut u8) -> *const c_void;
     fn eivro_verify_authorization(token: *const u8) -> bool;
-    fn eivro_authorization_free(handle: *mut c_void);
+    fn eivro_authorization_free(handle: *const c_void);
 }
 fn take_json<T: serde::de::DeserializeOwned>(raw: *mut c_char) -> Result<T> {
     if raw.is_null() {
@@ -72,7 +72,7 @@ impl Authorization {
 impl Drop for Authorization {
     fn drop(&mut self) {
         unsafe {
-            eivro_authorization_free(self.handle as *mut c_void);
+            eivro_authorization_free(self.handle as *const c_void);
         }
         self.token.fill(0);
     }

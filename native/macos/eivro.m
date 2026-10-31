@@ -2,6 +2,7 @@
 #import <AppKit/AppKit.h>
 #import <Security/Authorization.h>
 #import <Security/AuthorizationTags.h>
+#import <SystemConfiguration/SCDynamicStoreCopyDHCPInfo.h>
 #import <SystemConfiguration/SystemConfiguration.h>
 #include <ifaddrs.h>
 #include <net/if.h>
@@ -268,7 +269,7 @@ bool eivro_settings_apply(const char *text, bool restore) {
         return ok;
     }
 }
-void *eivro_authorize(uint8_t *token) {
+const void *eivro_authorize(uint8_t *token) {
     AuthorizationRef auth = NULL;
     AuthorizationItem item = {kAuthorizationRightExecute, 0, NULL, 0};
     AuthorizationRights rights = {1, &item};
@@ -309,7 +310,7 @@ bool eivro_verify_authorization(const uint8_t *token) {
     AuthorizationFree(auth, kAuthorizationFlagDefaults);
     return ok;
 }
-void eivro_authorization_free(void *handle) {
+void eivro_authorization_free(const void *handle) {
     if (handle)
         AuthorizationFree(handle, kAuthorizationFlagDestroyRights);
 }
