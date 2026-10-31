@@ -302,6 +302,9 @@ fn session(
         secondary: None,
     };
     if parsed.engine == EngineKind::Xray {
+        // Override auto_detect_interface for the local bridge as well: its
+        // sockets belong on lo0, not on the physical uplink or the TUN.
+        config["outbounds"][0]["bind_interface"] = serde_json::json!("lo0");
         process::xray_version_check(Path::new(process::INSTALLED_XRAY))?;
         let mut outbound = parsed.outbound;
         if !ip.is_loopback() {
@@ -327,9 +330,8 @@ fn session(
         process::ready(cores.secondary.as_mut().unwrap(), port)?;
     } else {
         config["outbounds"][0]["server"] = serde_json::json!(ip.to_string());
-        if !ip.is_loopback() {
-            config["outbounds"][0]["bind_interface"] = serde_json::json!(uplink);
-        }
+        config["outbounds"][0]["bind_interface"] =
+            serde_json::json!(if ip.is_loopback() { "lo0" } else { &uplink });
     }
     process::version_check(Path::new(process::INSTALLED_CORE))?;
     // Capture the original primary service before utun changes the route table.
@@ -567,5 +569,139 @@ mod tests {
             assert_state("before");
             assert!(!Path::new(JOURNAL).exists());
         }
+    }
+
+    #[test]
+    #[ignore = "requires root and temporary TUN on a disposable macOS GitHub Actions runner"]
+    fn native_tun_transfers_https_and_releases_its_interface() {
+        assert_eq!(unsafe { libc::geteuid() }, 0);
+        assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+        let uid: u32 = std::env::var("SUDO_UID").unwrap().parse().unwrap();
+        let gid: u32 = std::env::var("SUDO_GID").unwrap().parse().unwrap();
+        assert_ne!(uid, 0);
+        let uplink = native::uplink().unwrap();
+        let free_port = || {
+            std::net::TcpListener::bind(("127.0.0.1", 0))
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .port()
+        };
+        let server_port = free_port();
+        let port = free_port();
+        let probe_port = free_port();
+        assert!(server_port != port && port != probe_port && probe_port != server_port);
+        // The synthetic remote endpoint remains outside the client's TUN. Its
+        // DNS and data sockets are explicitly bound to the physical uplink.
+        let server_config = serde_json::json!({
+            "log":{"disabled":true},
+            "dns":{"servers":[{"type":"https","tag":"outside","server":"1.1.1.1","bind_interface":uplink}]},
+            "inbounds":[{"type":"shadowsocks","listen":"127.0.0.1","listen_port":server_port,
+                "method":"chacha20-ietf-poly1305","password":"ci-loopback-only"}],
+            "outbounds":[{"type":"direct","tag":"outside","bind_interface":uplink}],
+            "route":{"default_domain_resolver":"outside","final":"outside"}
+        });
+        let mut endpoint = Cores {
+            primary: Some(
+                spawn(
+                    Path::new(process::INSTALLED_CORE),
+                    &["run", "-c", "/dev/stdin"],
+                    &server_config,
+                    Some((uid, gid)),
+                )
+                .unwrap(),
+            ),
+            secondary: None,
+        };
+        process::ready(endpoint.primary.as_mut().unwrap(), server_port).unwrap();
+        let request = ConnectRequest {
+            uri: format!("ss://chacha20-ietf-poly1305:ci-loopback-only@127.0.0.1:{server_port}"),
+            bypass: vec![],
+            port,
+            bridge_port: None,
+            probe_port: Some(probe_port),
+            policies: vec![],
+            kill_switch: false,
+            connections: vec![],
+        };
+        let (client, mut server) = UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(35)))
+            .unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let worker = std::thread::spawn(move || {
+            let result = session(&request, Mode::Tun, &mut server, uid, gid);
+            let reply = match &result {
+                Ok(()) => Reply::Stopped,
+                Err(message) => Reply::Failed {
+                    message: message.clone(),
+                },
+            };
+            let _ = wire::send(&mut server, &reply);
+            result
+        });
+        struct Owner {
+            client: Option<UnixStream>,
+            worker: Option<std::thread::JoinHandle<Result<()>>>,
+        }
+        impl Drop for Owner {
+            fn drop(&mut self) {
+                // Also restores the runner's settings when an assertion fails.
+                self.client.take();
+                if let Some(worker) = self.worker.take() {
+                    let _ = worker.join();
+                }
+            }
+        }
+        let mut owner = Owner {
+            client: Some(client),
+            worker: Some(worker),
+        };
+        loop {
+            match wire::receive::<Reply>(owner.client.as_mut().unwrap()).unwrap() {
+                Reply::Checking => {}
+                Reply::Ready => break,
+                Reply::Failed { message } => panic!("TUN startup failed: {message}"),
+                _ => panic!("Unexpected TUN startup reply"),
+            }
+        }
+        assert_ne!(unsafe { libc::if_nametoindex(c"utun233".as_ptr()) }, 0);
+        let mut curl = process::child_command(Path::new("/usr/bin/curl"));
+        curl.args([
+            "-q",
+            "-4",
+            "--noproxy",
+            "*",
+            "--connect-timeout",
+            "5",
+            "--max-time",
+            "15",
+            "--silent",
+            "--output",
+            "/dev/null",
+            "--write-out",
+            "%{http_code}",
+            "https://example.com/",
+        ])
+        .stdout(Stdio::piped())
+        .stdin(Stdio::null());
+        as_user(&mut curl, uid, gid);
+        let result = curl.output().unwrap();
+        assert!(
+            result.status.success(),
+            "HTTPS without an explicit proxy failed"
+        );
+        assert_eq!(result.stdout, b"200");
+        wire::send(owner.client.as_mut().unwrap(), &Request::Stop {}).unwrap();
+        assert!(matches!(
+            wire::receive::<Reply>(owner.client.as_mut().unwrap()).unwrap(),
+            Reply::Stopped
+        ));
+        owner.client.take();
+        owner.worker.take().unwrap().join().unwrap().unwrap();
+        assert_eq!(unsafe { libc::if_nametoindex(c"utun233".as_ptr()) }, 0);
+        assert!(!Path::new(JOURNAL).exists());
     }
 }

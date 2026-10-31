@@ -120,7 +120,7 @@ jobs:
           (cd dist && shasum -a 256 -c "SHA256SUMS-macos-${{ matrix.architecture }}")
           sudo installer -pkg "dist/Eivro-$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')-macos-${{ matrix.architecture }}.pkg" -target /
           python3 scripts/smoke-macos.py
-      - name: Verify native DNS and proxy recovery on the disposable runner
+      - name: Verify native TUN and network recovery on the disposable runner
         run: |
           cargo test --locked --lib --no-run --message-format=json > work/macos-lib-tests.json
           python3 - <<'PYTHON'
@@ -130,8 +130,8 @@ jobs:
           binaries = [r['executable'] for r in records if r.get('reason') == 'compiler-artifact'
                       and r.get('executable') and r['target']['kind'] == ['lib'] and r['profile']['test']]
           assert len(binaries) == 1
-          subprocess.run(['sudo', 'env', 'GITHUB_ACTIONS=true', binaries[0], '--ignored', '--exact',
-              'platform::macos::daemon::tests::native_preferences_restore_and_recover_after_abandoned_lease'], check=True)
+          subprocess.run(['sudo', 'env', 'GITHUB_ACTIONS=true', binaries[0], '--ignored', '--test-threads=1',
+              'platform::macos::daemon::tests::'], check=True)
           PYTHON
       - name: Remove test installation
         if: always()
