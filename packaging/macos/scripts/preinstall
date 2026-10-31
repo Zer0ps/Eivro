@@ -6,6 +6,12 @@ if [ "${3:-/}" != / ]; then
     echo 'Eivro must be installed on the running system volume.' >&2
     exit 1
 fi
+version=$(/usr/bin/sw_vers -productVersion)
+major=${version%%.*}
+if [ "$major" -lt 26 ]; then
+    echo 'Eivro requires macOS 26 or later.' >&2
+    exit 1
+fi
 if /bin/launchctl print system/io.eivro.tun >/dev/null 2>&1; then
     /bin/launchctl bootout system/io.eivro.tun
 fi

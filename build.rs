@@ -27,7 +27,7 @@ fn main() {
             "-Wall",
             "-Wextra",
             "-Werror",
-            "-mmacosx-version-min=13.0",
+            "-mmacosx-version-min=26.0",
             "-arch",
             architecture,
             "native/macos/eivro.m",

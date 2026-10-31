@@ -34,8 +34,8 @@ def verify_macho(binary, architecture):
         elif len(fields) == 2 and ((command == 'LC_BUILD_VERSION' and fields[0] == 'minos')
                 or (command == 'LC_VERSION_MIN_MACOSX' and fields[0] == 'version')):
             minimums.append(tuple(map(int, fields[1].split('.'))))
-    if not minimums or any((version + (0, 0))[:2] > (13, 0) for version in minimums):
-        raise SystemExit(f'{binary.name} does not declare compatibility with macOS 13')
+    if not minimums or any((version + (0, 0))[:2] > (26, 0) for version in minimums):
+        raise SystemExit(f'{binary.name} does not declare compatibility with macOS 26')
 
 
 def main():
@@ -65,7 +65,7 @@ def main():
         'CFBundleExecutable': 'eivro', 'CFBundleIdentifier': 'io.eivro.Client',
         'CFBundleName': 'Eivro', 'CFBundleDisplayName': 'Eivro', 'CFBundlePackageType': 'APPL',
         'CFBundleShortVersionString': VERSION, 'CFBundleVersion': VERSION,
-        'LSMinimumSystemVersion': '13.0', 'NSHighResolutionCapable': True,
+        'LSMinimumSystemVersion': '26.0', 'NSHighResolutionCapable': True,
         'NSPrincipalClass': 'NSApplication', 'CFBundleIconFile': 'Eivro',
     }
     (app / 'Info.plist').write_bytes(plistlib.dumps(info))
@@ -111,7 +111,7 @@ def main():
     image_root = work / 'image'
     image_root.mkdir()
     copy(package, image_root / package.name)
-    (image_root / 'Read me.txt').write_text('Eivro for macOS 13 or later.\nOpen the .pkg installer, then launch Eivro from Applications.\nThis preview is ad-hoc signed, not notarized by Apple.\nVPN, DNS recovery and energy use require validation on a Mac before a stable macOS release.\n')
+    (image_root / 'Read me.txt').write_text('Eivro for macOS 26 or later.\nOpen the .pkg installer, then launch Eivro from Applications.\nThis preview is ad-hoc signed, not notarized by Apple.\nVPN, DNS recovery and energy use require validation on a Mac before a stable macOS release.\n')
     dmg = dist / f'Eivro-{VERSION}-macos-{machine}.dmg'
     # hdiutil's automatic source-folder sizing can leave too little room for a
     # large PKG on the temporary filesystem. Empty space compresses away in UDZO.

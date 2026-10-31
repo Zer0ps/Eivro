@@ -568,6 +568,39 @@ mod tests {
             recover().unwrap();
             assert_state("before");
             assert!(!Path::new(JOURNAL).exists());
+            if !tun {
+                let original = native::settings_plan(32080, false).unwrap();
+                let mut lease = Lease::apply(original.clone(), None).unwrap();
+                let mut edit: serde_json::Value =
+                    serde_json::from_str(&native::settings_plan(32080, false).unwrap()).unwrap();
+                for row in edit.as_array_mut().unwrap() {
+                    row["applied"]["ExceptionsList"] = serde_json::json!(["ci.keep.invalid"]);
+                }
+                native::settings_apply(&edit.to_string(), false).unwrap();
+                lease.restore().unwrap();
+                let mut current: serde_json::Value =
+                    serde_json::from_str(&native::settings_plan(32080, false).unwrap()).unwrap();
+                let baseline: serde_json::Value = serde_json::from_str(&original).unwrap();
+                for row in current.as_array_mut().unwrap() {
+                    let old = baseline
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|old| old["service"] == row["service"])
+                        .unwrap();
+                    let mut wanted = old["before"].clone();
+                    wanted["ExceptionsList"] = serde_json::json!(["ci.keep.invalid"]);
+                    assert_eq!(
+                        row["before"], wanted,
+                        "proxy endpoints must restore without losing new exceptions"
+                    );
+                    // Remove the synthetic exception from the disposable runner.
+                    row["applied"] = old["before"].clone();
+                    row["applied_enabled"] = old["before_enabled"].clone();
+                }
+                native::settings_apply(&current.to_string(), false).unwrap();
+                assert_state("before");
+            }
         }
     }
 

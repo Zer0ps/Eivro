@@ -126,7 +126,7 @@ char *eivro_applications(void) {
 }
 
 // Only the installed root helper calls these. A journal is durably written by
-// Rust before applying the plan. Restore uses compare-and-swap per service.
+// Rust before applying the plan. Restore compares owned field groups within each service.
 char *eivro_settings_plan(uint16_t port, bool tun) {
     @autoreleasepool {
         SCPreferencesRef prefs = SCPreferencesCreate(NULL, CFSTR("Eivro"), NULL);
@@ -192,6 +192,44 @@ char *eivro_settings_plan(uint16_t port, bool tun) {
         return plan.count ? jsonCopy(plan) : NULL;
     }
 }
+static NSDictionary *restoredSettings(NSDictionary *entry, NSDictionary *current) {
+    NSDictionary *before = entry[@"before"];
+    NSDictionary *applied = entry[@"applied"];
+    NSMutableDictionary *result = [current mutableCopy];
+    // Endpoints are atomic groups: never combine another client's address
+    // with our old port. Independent exceptions/search settings stay editable.
+    NSArray *groups =
+        [entry[@"type"] isEqualToString:(__bridge NSString *)kSCNetworkProtocolTypeDNS]
+            ? @[ @[ @"ServerAddresses" ] ]
+            : @[
+                  @[ @"HTTPEnable", @"HTTPProxy", @"HTTPPort" ],
+                  @[ @"HTTPSEnable", @"HTTPSProxy", @"HTTPSPort" ],
+                  @[ @"SOCKSEnable", @"SOCKSProxy", @"SOCKSPort" ],
+                  @[ @"ProxyAutoConfigEnable", @"ProxyAutoConfigURLString" ],
+                  @[ @"ProxyAutoDiscoveryEnable" ], @[ @"ExceptionsList" ],
+                  @[ @"ExcludeSimpleHostnames" ]
+              ];
+    for (NSArray *keys in groups) {
+        bool owned = true;
+        for (NSString *key in keys) {
+            id actual = current[key], expected = applied[key];
+            if (actual != expected && ![actual isEqual:expected]) {
+                owned = false;
+                break;
+            }
+        }
+        if (!owned)
+            continue;
+        for (NSString *key in keys) {
+            if (before[key])
+                result[key] = before[key];
+            else
+                [result removeObjectForKey:key];
+        }
+    }
+    return result;
+}
+
 bool eivro_settings_apply(const char *text, bool restore) {
     @autoreleasepool {
         if (!text)
@@ -245,19 +283,26 @@ bool eivro_settings_apply(const char *text, bool restore) {
                 (__bridge NSDictionary *)SCNetworkProtocolGetConfiguration(protocol);
             if (!current)
                 current = @{};
-            NSDictionary *expected = entry[restore ? @"applied" : @"before"];
-            if ([current isEqualToDictionary:expected] &&
+            bool unchanged =
+                [current isEqualToDictionary:entry[restore ? @"applied" : @"before"]] &&
                 SCNetworkProtocolGetEnabled(protocol) ==
-                    [entry[restore ? @"applied_enabled" : @"before_enabled"] boolValue]) {
+                    [entry[restore ? @"applied_enabled" : @"before_enabled"] boolValue];
+            if (restore) {
+                NSDictionary *restored = restoredSettings(entry, current);
+                ok = SCNetworkProtocolSetConfiguration(protocol,
+                                                       (__bridge CFDictionaryRef)restored) &&
+                     ok;
+                if (unchanged)
+                    ok = SCNetworkProtocolSetEnabled(protocol,
+                                                     [entry[@"before_enabled"] boolValue]) &&
+                         ok;
+            } else if (unchanged) {
                 ok = SCNetworkProtocolSetConfiguration(
-                         protocol,
-                         (__bridge CFDictionaryRef)entry[restore ? @"before" : @"applied"]) &&
+                         protocol, (__bridge CFDictionaryRef)entry[@"applied"]) &&
                      ok;
-                ok = SCNetworkProtocolSetEnabled(
-                         protocol,
-                         [entry[restore ? @"before_enabled" : @"applied_enabled"] boolValue]) &&
+                ok = SCNetworkProtocolSetEnabled(protocol, [entry[@"applied_enabled"] boolValue]) &&
                      ok;
-            } else if (!restore) {
+            } else {
                 ok = false;
             }
             CFRelease(protocol);
