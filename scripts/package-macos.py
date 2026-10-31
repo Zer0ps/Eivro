@@ -20,6 +20,24 @@ def copy(source, destination, mode=0o644):
     shutil.copy2(source, destination)
     destination.chmod(mode)
 
+def verify_macho(binary, architecture):
+    architectures = subprocess.check_output(['lipo', '-archs', str(binary)], text=True).split()
+    if architecture not in architectures:
+        raise SystemExit(f'Wrong architecture in {binary.name}: {architectures}')
+    commands = subprocess.check_output(['otool', '-l', str(binary)], text=True).splitlines()
+    command = None
+    minimums = []
+    for line in commands:
+        fields = line.split()
+        if fields[:1] == ['cmd']:
+            command = fields[1]
+        elif len(fields) == 2 and ((command == 'LC_BUILD_VERSION' and fields[0] == 'minos')
+                or (command == 'LC_VERSION_MIN_MACOSX' and fields[0] == 'version')):
+            minimums.append(tuple(map(int, fields[1].split('.'))))
+    if not minimums or any((version + (0, 0))[:2] > (13, 0) for version in minimums):
+        raise SystemExit(f'{binary.name} does not declare compatibility with macOS 13')
+
+
 def main():
     if platform.system() != 'Darwin':
         raise SystemExit('Package macOS on a macOS runner, not on Linux')
@@ -41,6 +59,8 @@ def main():
         copy(ROOT / ('target/release' if name == 'eivro' else 'vendor') / name, app / 'MacOS' / name, 0o755)
     for name in ('eivro-tun', 'sing-box', 'xray'):
         copy(ROOT / ('target/release' if name == 'eivro-tun' else 'vendor') / name, helper / name, 0o755)
+    for binary in list((app / 'MacOS').iterdir()) + list(helper.iterdir()):
+        verify_macho(binary, machine)
     info = {
         'CFBundleExecutable': 'eivro', 'CFBundleIdentifier': 'io.eivro.Client',
         'CFBundleName': 'Eivro', 'CFBundleDisplayName': 'Eivro', 'CFBundlePackageType': 'APPL',
