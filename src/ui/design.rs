@@ -355,27 +355,37 @@ impl App {
             return;
         }
 
-        if self.settings.connections.is_empty() {
-            self.network_monitor = None;
-            self.network_due = None;
-        }
-        if !self.settings.connections.is_empty()
-            && self.network_monitor.is_none()
-            && !self.network_monitor_failed
+        #[cfg(target_os = "linux")]
         {
-            let wake = ctx.clone();
-            match eivro::network::Monitor::start(Arc::new(move || wake.request_repaint())) {
-                Ok(monitor) => self.network_monitor = Some(monitor),
-                Err(_) => self.network_monitor_failed = true,
+            if self.settings.connections.is_empty() {
+                self.network_monitor = None;
+                self.network_due = None;
             }
-            self.scan_network(ctx);
+            if !self.settings.connections.is_empty()
+                && self.network_monitor.is_none()
+                && !self.network_monitor_failed
+            {
+                let wake = ctx.clone();
+                match eivro::network::Monitor::start(Arc::new(move || wake.request_repaint())) {
+                    Ok(monitor) => self.network_monitor = Some(monitor),
+                    Err(_) => self.network_monitor_failed = true,
+                }
+                self.scan_network(ctx);
+            }
+            if self
+                .network_monitor
+                .as_ref()
+                .is_some_and(|m| m.events.try_iter().count() > 0)
+            {
+                self.schedule_network_scan(ctx);
+            }
         }
-        if self
-            .network_monitor
-            .as_ref()
-            .is_some_and(|m| m.events.try_iter().count() > 0)
+        #[cfg(target_os = "macos")]
+        if !self.settings.connections.is_empty()
+            && !self.network_initialized
+            && self.network_result.is_none()
         {
-            self.schedule_network_scan(ctx);
+            self.scan_network(ctx);
         }
         if let Some(due) = self.network_due {
             if std::time::Instant::now() >= due {

@@ -76,7 +76,7 @@ fn routing_priorities_applications_and_guard_config_are_accepted_by_core() {
         bridge_port: None,
         probe_port: Some(2081),
         policies: p.rules,
-        kill_switch: true,
+        kill_switch: cfg!(target_os = "linux"),
     };
     let config = config::generate(&request, Mode::Tun).unwrap();
     assert_eq!(config["route"]["rules"][0]["inbound"], json!(["probe"]));
@@ -88,11 +88,20 @@ fn routing_priorities_applications_and_guard_config_are_accepted_by_core() {
         config["route"]["rules"][5]["process_path"],
         json!(["/usr/bin/firefox"])
     );
-    assert_eq!(config["outbounds"][0]["routing_mark"], eivro::guard::MARK);
-    assert_eq!(
-        config["dns"]["servers"][0]["routing_mark"],
-        eivro::guard::MARK
-    );
+    #[cfg(target_os = "linux")]
+    {
+        assert_eq!(config["outbounds"][0]["routing_mark"], eivro::guard::MARK);
+        assert_eq!(
+            config["dns"]["servers"][0]["routing_mark"],
+            eivro::guard::MARK
+        );
+    }
+    #[cfg(target_os = "macos")]
+    {
+        assert!(config["outbounds"][0].get("routing_mark").is_none());
+        assert_eq!(config["inbounds"][2]["interface_name"], "utun233");
+        assert_eq!(config["inbounds"][2]["dns_mode"], "disabled");
+    }
     assert_eq!(config["log"]["disabled"], true);
     use std::{
         io::Write,

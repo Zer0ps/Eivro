@@ -18,6 +18,12 @@ impl App {
         for event in events {
             match event {
                 DesktopEvent::Show => self.show_window(ctx),
+                #[cfg(target_os = "macos")]
+                DesktopEvent::Settings => {
+                    self.show_window(ctx);
+                    self.catalog_open = false;
+                    self.page = Page::Settings;
+                }
                 DesktopEvent::Toggle => self.connect(ctx),
                 DesktopEvent::Quit => {
                     self.quitting = true;
@@ -35,6 +41,8 @@ impl App {
                     }
                 }
                 DesktopEvent::Network(online) => {
+                    #[cfg(target_os = "macos")]
+                    self.schedule_network_scan(ctx);
                     self.recovery.offline = !online;
                     let initial = !self.network_seen;
                     self.network_seen = true;

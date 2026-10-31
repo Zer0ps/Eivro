@@ -44,6 +44,7 @@ pub struct App {
     catalog_focus: Option<u64>,
     network_links: Vec<eivro::network::Interface>,
     network_result: Option<Receiver<Vec<eivro::network::Interface>>>,
+    #[cfg(target_os = "linux")]
     network_monitor: Option<eivro::network::Monitor>,
     network_monitor_failed: bool,
     network_due: Option<std::time::Instant>,
@@ -247,6 +248,7 @@ impl App {
             catalog_focus: None,
             network_links: Vec::new(),
             network_result: None,
+            #[cfg(target_os = "linux")]
             network_monitor: None,
             network_monitor_failed: false,
             network_due: None,
@@ -733,7 +735,9 @@ impl eframe::App for App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
+    #[cfg(target_os = "linux")]
+    use std::time::Instant;
     fn model() -> App {
         let mut settings = Settings {
             port: std::net::TcpListener::bind("127.0.0.1:0")
@@ -1084,7 +1088,11 @@ mod tests {
             let mut app = App::model(Settings::default(), None, None);
             for step in 0..38 {
                 let modifiers = if [2, 12].contains(&step) {
-                    egui::Modifiers::CTRL
+                    if cfg!(target_os = "macos") {
+                        egui::Modifiers::MAC_CMD
+                    } else {
+                        egui::Modifiers::CTRL
+                    }
                 } else {
                     egui::Modifiers::NONE
                 };
@@ -1248,6 +1256,7 @@ mod tests {
         app.connect(&egui::Context::default());
         assert!(!app.want_connected);
     }
+    #[cfg(target_os = "linux")]
     fn wait(app: &mut App, ctx: &egui::Context, running: bool) {
         let deadline = Instant::now() + Duration::from_secs(6);
         while Instant::now() < deadline {
@@ -1260,6 +1269,7 @@ mod tests {
         panic!("connection transition timed out: {:?}", app.error);
     }
     #[test]
+    #[cfg(target_os = "linux")]
     fn server_switch_and_rule_entry_work_while_connected() {
         let ctx = egui::Context::default();
         let mut app = model();
@@ -1287,6 +1297,7 @@ mod tests {
         assert!(app.error.as_ref().is_some_and(|e| e.contains("HTTPS")));
     }
     #[test]
+    #[cfg(target_os = "linux")]
     fn disconnect_cancels_a_pending_switch() {
         let ctx = egui::Context::default();
         let mut app = model();

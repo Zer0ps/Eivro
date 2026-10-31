@@ -8,9 +8,11 @@ pub fn harden() -> std::io::Result<()> {
             rlim_cur: 0,
             rlim_max: 0,
         };
-        if libc::setrlimit(libc::RLIMIT_CORE, &limit) != 0
-            || libc::prctl(libc::PR_SET_DUMPABLE, 0) != 0
-        {
+        if libc::setrlimit(libc::RLIMIT_CORE, &limit) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        #[cfg(target_os = "linux")]
+        if libc::prctl(libc::PR_SET_DUMPABLE, 0) != 0 {
             return Err(std::io::Error::last_os_error());
         }
     }

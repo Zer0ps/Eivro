@@ -1,14 +1,14 @@
-//! Named, interface-bound exits. A missing exit never falls back to the VPN.
-use crate::Result;
-use serde::{Deserialize, Serialize};
+#[cfg(target_os = "linux")]
 use std::{
-    collections::HashSet,
     io::Read,
-    net::IpAddr,
     path::Path,
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
+// Named, interface-bound exits. A missing exit never falls back to the VPN.
+use crate::Result;
+use serde::{Deserialize, Serialize};
+use std::{collections::HashSet, net::IpAddr};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(tag = "source", content = "servers", rename_all = "snake_case")]
@@ -27,7 +27,7 @@ pub struct Connection {
     pub dns: Dns,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Interface {
     pub name: String,
     pub index: u32,
@@ -39,6 +39,8 @@ pub fn validate_interface(name: &str) -> Result<()> {
     if name.is_empty()
         || name.len() >= libc::IFNAMSIZ
         || name == "lo"
+        || name == "lo0"
+        || name == crate::platform::TUN_NAME
         || name == "eivro0"
         || name == "velum0"
         || name.starts_with('-')
@@ -111,6 +113,7 @@ impl Connection {
 }
 
 /// One bounded snapshot on demand. No periodic DNS queries or persistent logs.
+#[cfg(target_os = "linux")]
 pub fn interfaces() -> Vec<Interface> {
     let Ok(entries) = std::fs::read_dir("/sys/class/net") else {
         return Vec::new();
@@ -184,6 +187,7 @@ pub fn apply_dns(bytes: &[u8], links: &mut [Interface]) {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn bounded_output(program: &str, args: &[&str]) -> Result<Vec<u8>> {
     use std::os::fd::AsRawFd;
     let mut child = Command::new(program)
@@ -249,11 +253,13 @@ fn bounded_output(program: &str, args: &[&str]) -> Result<Vec<u8>> {
 
 /// A sleeping rtnetlink subscription. Only kernel notifications trigger a snapshot.
 /// Closing the stop socket joins the worker; no periodic timer or probe is needed.
+#[cfg(target_os = "linux")]
 pub struct Monitor {
     stop: Option<std::os::unix::net::UnixStream>,
     worker: Option<std::thread::JoinHandle<()>>,
     pub events: std::sync::mpsc::Receiver<()>,
 }
+#[cfg(target_os = "linux")]
 impl Monitor {
     pub fn start(wake: std::sync::Arc<dyn Fn() + Send + Sync>) -> std::io::Result<Self> {
         use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -321,6 +327,7 @@ impl Monitor {
         })
     }
 }
+#[cfg(target_os = "linux")]
 impl Drop for Monitor {
     fn drop(&mut self) {
         self.stop.take();
@@ -329,3 +336,6 @@ impl Drop for Monitor {
         }
     }
 }
+
+#[cfg(target_os = "macos")]
+pub use crate::platform::macos::network::interfaces;

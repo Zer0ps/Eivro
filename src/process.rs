@@ -3,12 +3,14 @@ use crate::{
     config::{ConnectRequest, Mode, generate},
     import::{EngineKind, Profile, parse_uri},
 };
+#[cfg(target_os = "linux")]
+use std::os::fd::{FromRawFd, OwnedFd};
 use std::{
     fs,
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
     os::{
-        fd::{AsRawFd, FromRawFd, OwnedFd},
+        fd::AsRawFd,
         unix::{fs::MetadataExt, net::UnixStream, process::CommandExt},
     },
     path::{Path, PathBuf},
@@ -21,9 +23,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub const INSTALLED_CORE: &str = "/usr/libexec/eivro/sing-box";
-pub const HELPER: &str = "/usr/libexec/eivro/eivro-tun";
-pub const INSTALLED_XRAY: &str = "/usr/libexec/eivro/xray";
+pub use crate::platform::HELPER;
+pub use crate::platform::INSTALLED_CORE;
+pub use crate::platform::INSTALLED_XRAY;
 pub const MAX_REQUEST: usize = 128 * 1024;
 
 #[derive(Clone, Debug)]
@@ -84,13 +86,16 @@ pub(crate) fn child_command(core: &Path) -> Command {
         .env("XDG_CACHE_HOME", "/nonexistent")
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    #[cfg(target_os = "linux")]
     let parent = unsafe { libc::getpid() };
     // No secret arguments, shell, or config files. The child dies with its supervisor.
     unsafe {
         c.pre_exec(move || {
+            #[cfg(target_os = "linux")]
             if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
                 return Err(std::io::Error::last_os_error());
             }
+            #[cfg(target_os = "linux")]
             if libc::getppid() != parent {
                 return Err(std::io::Error::from_raw_os_error(libc::ECANCELED));
             }
@@ -107,7 +112,7 @@ pub(crate) fn child_command(core: &Path) -> Command {
     c
 }
 
-fn version_check(core: &Path) -> Result<()> {
+pub(crate) fn version_check(core: &Path) -> Result<()> {
     let output = child_command(core)
         .arg("version")
         .stdout(Stdio::piped())
@@ -126,7 +131,7 @@ fn version_check(core: &Path) -> Result<()> {
     Ok(())
 }
 
-fn xray_version_check(core: &Path) -> Result<()> {
+pub(crate) fn xray_version_check(core: &Path) -> Result<()> {
     let output = child_command(core)
         .arg("version")
         .stdout(Stdio::piped())
@@ -144,7 +149,7 @@ fn xray_version_check(core: &Path) -> Result<()> {
     Ok(())
 }
 
-fn check_xray(core: &Path, config: &serde_json::Value) -> Result<()> {
+pub(crate) fn check_xray(core: &Path, config: &serde_json::Value) -> Result<()> {
     let mut child = child_command(core)
         .args(["run", "-test", "-config", "stdin:"])
         .stdin(Stdio::piped())
@@ -227,13 +232,16 @@ pub fn validate_profiles(profiles: &[Profile]) -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 struct XrayChild(Child);
+#[cfg(target_os = "linux")]
 impl Drop for XrayChild {
     fn drop(&mut self) {
         terminate(&mut self.0);
     }
 }
 
+#[cfg(target_os = "linux")]
 fn start_xray(req: &ConnectRequest, watch: &UnixStream) -> Result<Option<XrayChild>> {
     let parsed = parse_uri(&req.uri)?;
     if parsed.engine != EngineKind::Xray {
@@ -267,6 +275,7 @@ fn start_xray(req: &ConnectRequest, watch: &UnixStream) -> Result<Option<XrayChi
 
 /// Only the root helper calls this path. Xray keeps the caller's uid and only
 /// CAP_NET_RAW, needed for SO_MARK on Linux 5.17+, rather than running as root.
+#[cfg(target_os = "linux")]
 pub(crate) fn protected_xray(req: &ConnectRequest) -> Result<Option<Child>> {
     let parsed = parse_uri(&req.uri)?;
     if parsed.engine != EngineKind::Xray {
@@ -312,6 +321,7 @@ pub(crate) fn protected_xray(req: &ConnectRequest) -> Result<Option<Child>> {
     Ok(Some(child))
 }
 
+#[cfg(target_os = "linux")]
 fn restrict_xray(cmd: &mut Command, uid: u32) -> Result<()> {
     let mut buffer = [0u8; 16384];
     let mut passwd: libc::passwd = unsafe { std::mem::zeroed() };
@@ -388,6 +398,7 @@ fn restrict_xray(cmd: &mut Command, uid: u32) -> Result<()> {
 
 /// Resolve before TUN exists and bind the external socket to an uplink. Otherwise
 /// Xray's own DNS/dial can re-enter sing-box's TUN and recurse through the bridge.
+#[cfg(target_os = "linux")]
 fn pin_xray_uplink(
     out: &mut serde_json::Value,
     host: &str,
@@ -544,6 +555,7 @@ pub(crate) fn spawn_configuration(core: &Path, config: &serde_json::Value) -> Re
     Ok(child)
 }
 
+#[cfg(target_os = "linux")]
 pub fn pid_fd(child: &Child) -> Result<OwnedFd> {
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, child.id(), 0) };
     if fd < 0 {
@@ -552,6 +564,7 @@ pub fn pid_fd(child: &Child) -> Result<OwnedFd> {
     Ok(unsafe { OwnedFd::from_raw_fd(fd as i32) })
 }
 
+#[cfg(target_os = "linux")]
 pub fn terminate(child: &mut Child) {
     if child.try_wait().ok().flatten().is_some() {
         return;
@@ -642,8 +655,8 @@ impl Session {
             req.probe_port = None;
         }
         generate(&req, mode)?;
-        if mode == Mode::Tun && !helper_available() {
-            return Err("Для TUN установите RPM/DEB: нужен системный помощник Eivro.".into());
+        if (mode == Mode::Tun || cfg!(target_os = "macos")) && !helper_available() {
+            return Err(crate::platform::HELPER_HINT.into());
         }
         let (stop, watch) =
             UnixStream::pair().map_err(|_| "Не удалось создать канал управления.")?;
@@ -686,6 +699,7 @@ impl Drop for Session {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn supervise(
     req: ConnectRequest,
     mode: Mode,
@@ -802,6 +816,7 @@ pub fn poll(fds: &mut [libc::pollfd]) -> Result<()> {
         }
     }
 }
+#[cfg(target_os = "linux")]
 fn set_nonblocking(fd: i32) -> Result<()> {
     if unsafe { libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK) } < 0 {
         Err("Ошибка канала управления.".into())
@@ -825,6 +840,7 @@ pub(crate) fn free_port(excluded: &[u16]) -> Result<u16> {
     Err("Не удалось выбрать свободный порт.".into())
 }
 
+#[cfg(target_os = "linux")]
 pub fn tun_preflight() -> Result<()> {
     if !Path::new("/dev/net/tun").exists() {
         return Err("Устройство /dev/net/tun недоступно этому процессу.".into());
@@ -862,20 +878,26 @@ pub fn tun_preflight() -> Result<()> {
 }
 
 pub(crate) fn app_path() -> Result<PathBuf> {
-    let exe = std::env::current_exe().map_err(|_| "Нет пути Eivro.")?;
-    if exe.file_name().is_some_and(|s| s == "eivro") {
-        return Ok(exe);
-    }
-    // Integration tests and diagnostic examples are one directory below the GUI.
-    for dir in exe.parent().into_iter().flat_map(|p| p.ancestors()).take(3) {
-        let path = dir.join("eivro");
-        if path.is_file() {
-            return Ok(path);
+    #[cfg(target_os = "macos")]
+    return std::env::current_exe().map_err(|_| "Не найден исполняемый файл Eivro.".into());
+    #[cfg(target_os = "linux")]
+    {
+        let exe = std::env::current_exe().map_err(|_| "Нет пути Eivro.")?;
+        if exe.file_name().is_some_and(|s| s == "eivro") {
+            return Ok(exe);
         }
+        // Integration tests and diagnostic examples are one directory below the GUI.
+        for dir in exe.parent().into_iter().flat_map(|p| p.ancestors()).take(3) {
+            let path = dir.join("eivro");
+            if path.is_file() {
+                return Ok(path);
+            }
+        }
+        Err("Не найден исполняемый файл Eivro.".into())
     }
-    Err("Не найден исполняемый файл Eivro.".into())
 }
 
+#[cfg(target_os = "linux")]
 fn check_connection(port: u16, watch: &UnixStream, core: i32, xray: i32) -> Result<bool> {
     let child = child_command(&app_path()?)
         .args(["--check-connection", &port.to_string()])
@@ -887,7 +909,7 @@ fn check_connection(port: u16, watch: &UnixStream, core: i32, xray: i32) -> Resu
     supervise_connection_check(child, watch, core, xray, Duration::from_secs(18))
 }
 
-fn supervise_connection_check(
+pub(crate) fn supervise_connection_check(
     mut child: Child,
     watch: &UnixStream,
     core: i32,
@@ -936,10 +958,12 @@ fn supervise_connection_check(
     result
 }
 
+#[cfg(target_os = "linux")]
 struct ProxyGuard {
     child: Child,
     finished: bool,
 }
+#[cfg(target_os = "linux")]
 impl ProxyGuard {
     fn start(port: u16) -> Result<Self> {
         // Deliberately no parent-death signal: this process must survive a GUI
@@ -1029,6 +1053,7 @@ impl ProxyGuard {
         }
     }
 }
+#[cfg(target_os = "linux")]
 impl Drop for ProxyGuard {
     fn drop(&mut self) {
         let _ = self.finish();
@@ -1047,6 +1072,7 @@ pub fn helper_compatible() -> bool {
             })
 }
 
+#[cfg(target_os = "linux")]
 pub fn install_package_path() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let arch = std::env::consts::ARCH;
@@ -1068,6 +1094,7 @@ pub fn install_package_path() -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
+#[cfg(target_os = "linux")]
 pub fn install_package() -> Result<()> {
     let package = install_package_path()
         .ok_or("Рядом с приложением нет RPM/DEB этой версии.")?
@@ -1094,7 +1121,31 @@ pub fn install_package() -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(target_os = "macos")]
+pub use crate::platform::macos::wait::pid_fd;
+#[cfg(target_os = "macos")]
+fn supervise(
+    req: ConnectRequest,
+    mode: Mode,
+    watch: UnixStream,
+    controller: &crate::tun::Controller,
+    notify: impl Fn(Event),
+) -> Result<()> {
+    controller.run_session(&req, mode, &watch, notify)
+}
+#[cfg(target_os = "macos")]
+pub fn install_package_path() -> Option<PathBuf> {
+    None
+}
+#[cfg(target_os = "macos")]
+pub fn install_package() -> Result<()> {
+    Err(crate::platform::HELPER_HINT.into())
+}
+
+#[cfg(target_os = "macos")]
+pub use crate::platform::macos::wait::terminate;
+
+#[cfg(all(test, target_os = "linux"))]
 mod privilege_tests {
     use super::*;
     #[test]

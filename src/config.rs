@@ -42,6 +42,9 @@ pub fn generate_with_network(
     mode: Mode,
     links: &[crate::network::Interface],
 ) -> Result<Value> {
+    if req.kill_switch && !crate::platform::KILL_SWITCH_SUPPORTED {
+        return Err("Kill switch пока доступен только в Linux.".into());
+    }
     crate::network::validate(&req.connections)?;
     for rule in &req.policies {
         if let crate::policy::Action::Connection(id) = rule.action
@@ -170,10 +173,10 @@ pub fn generate_with_network(
     }
     if mode == Mode::Tun {
         inbounds.push(json!({
-            "type":"tun","tag":"tun","interface_name":"eivro0",
+            "type":"tun","tag":"tun","interface_name":crate::platform::TUN_NAME,
             "address":["172.31.250.1/30","fdfe:5645:4c55::1/126"],
             "mtu":1500,"auto_route":true,"strict_route":true,
-            "dns_mode":"hijack","stack":"system"
+            "dns_mode":crate::platform::TUN_DNS_MODE,"stack":"system"
         }));
     }
     let mut config = json!({
@@ -199,6 +202,7 @@ pub fn generate_with_network(
         .as_array_mut()
         .unwrap()
         .extend(extra_dns);
+    #[cfg(target_os = "linux")]
     if req.kill_switch {
         for outbound in config["outbounds"].as_array_mut().unwrap() {
             outbound["routing_mark"] = json!(crate::guard::MARK);

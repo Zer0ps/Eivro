@@ -4,7 +4,11 @@ use super::*;
 impl App {
     pub(super) fn overview(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, p: Palette) {
         if (self.catalog_open || ctx.memory(|m| m.top_modal_layer().is_none()))
-            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F9))
+            && ctx.input_mut(|i| {
+                i.consume_key(egui::Modifiers::NONE, egui::Key::F9)
+                    || (cfg!(target_os = "macos")
+                        && i.consume_key(egui::Modifiers::MAC_CMD, egui::Key::K))
+            })
         {
             self.catalog_open = !self.catalog_open;
         }
@@ -139,7 +143,14 @@ impl App {
                         );
                     }
                     if response
-                        .on_hover_text(format!("{selected}\nОткрыть каталог · F9"))
+                        .on_hover_text(format!(
+                            "{selected}\nОткрыть каталог · {}",
+                            if cfg!(target_os = "macos") {
+                                "⌘K"
+                            } else {
+                                "F9"
+                            }
+                        ))
                         .clicked()
                     {
                         self.catalog_open = true;
@@ -155,7 +166,7 @@ impl App {
                                 ui.spacing_mut().item_spacing.x = 4.0;
                                 for (value, label, help) in [
                                     (Mode::Tun, "TUN", "Вся система, с учётом правил"),
-                                    (Mode::Proxy, "Прокси", "Системный прокси GNOME"),
+                                    (Mode::Proxy, "Прокси", eivro::platform::PROXY_HINT),
                                     (Mode::Local, "Локально", "HTTP / SOCKS5 для приложения"),
                                 ] {
                                     if command(
@@ -231,7 +242,7 @@ impl App {
                     }
                     if self.settings.mode == Mode::Tun && !self.helper_ready {
                         ui.label(
-                            RichText::new("Для TUN установите RPM/DEB этой версии.")
+                            RichText::new(eivro::platform::HELPER_HINT)
                                 .small()
                                 .color(p.muted),
                         );

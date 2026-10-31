@@ -87,7 +87,16 @@ impl App {
     pub(super) fn shell(&mut self, ctx: &egui::Context, p: Palette) {
         let narrow = ctx.content_rect().width() < 780.0;
         if (self.navigation_overlay || ctx.memory(|m| m.top_modal_layer().is_none()))
-            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::B))
+            && ctx.input_mut(|i| {
+                i.consume_key(
+                    if cfg!(target_os = "macos") {
+                        egui::Modifiers::MAC_CMD
+                    } else {
+                        egui::Modifiers::CTRL
+                    },
+                    egui::Key::B,
+                )
+            })
         {
             if narrow {
                 self.navigation_overlay = !self.navigation_overlay;
@@ -141,7 +150,14 @@ impl App {
                         egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label)
                     });
                     if response
-                        .on_hover_text(format!("{label} · Ctrl+B"))
+                        .on_hover_text(format!(
+                            "{label} · {}B",
+                            if cfg!(target_os = "macos") {
+                                "⌘"
+                            } else {
+                                "Ctrl+"
+                            }
+                        ))
                         .clicked()
                     {
                         if narrow {

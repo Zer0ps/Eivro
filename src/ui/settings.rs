@@ -161,12 +161,24 @@ impl App {
                     .id_salt("advanced-settings")
                     .default_open(next.kill_switch)
                     .show(ui, |ui| {
-                        changed |= switch_row(
-                            ui,
-                            "Kill switch · экспериментально",
-                            &mut next.kill_switch,
-                            p,
+                        ui.add_enabled_ui(
+                            eivro::platform::KILL_SWITCH_SUPPORTED || next.kill_switch,
+                            |ui| {
+                                changed |= switch_row(
+                                    ui,
+                                    "Kill switch · экспериментально",
+                                    &mut next.kill_switch,
+                                    p,
+                                );
+                            },
                         );
+                        if !eivro::platform::KILL_SWITCH_SUPPORTED {
+                            ui.label(
+                                RichText::new("Пока доступен только в Linux.")
+                                    .small()
+                                    .color(p.muted),
+                            );
+                        }
                         if next.kill_switch {
                             ui.label(
                                 RichText::new(
@@ -201,12 +213,9 @@ impl App {
                         }
                         if self.monitor_unavailable {
                             ui.label(
-                                RichText::new(
-                                    "NetworkManager недоступен; изменения сети не \
-отслеживаются.",
-                                )
-                                .small()
-                                .color(p.muted),
+                                RichText::new("Системные события сети недоступны.")
+                                    .small()
+                                    .color(p.muted),
                             );
                         }
                         if self.network_monitor_failed {
@@ -225,10 +234,7 @@ impl App {
                 section(ui, "Eivro", p);
                 ui.label(format!("Версия {}", env!("CARGO_PKG_VERSION")));
                 if !self.helper_ready {
-                    ui.label(
-                        RichText::new("Для TUN установите RPM/DEB этой версии Eivro.")
-                            .color(p.muted),
-                    );
+                    ui.label(RichText::new(eivro::platform::HELPER_HINT).color(p.muted));
                     if process::install_package_path().is_some()
                         && ui
                             .add_enabled(

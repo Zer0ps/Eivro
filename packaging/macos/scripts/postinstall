@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+if [ "${3:-/}" != / ]; then exit 1; fi
+/bin/launchctl bootstrap system /Library/LaunchDaemons/io.eivro.tun.plist

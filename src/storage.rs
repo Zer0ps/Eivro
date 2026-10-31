@@ -273,8 +273,13 @@ fn config_base() -> Result<PathBuf> {
         Ok(PathBuf::from(p))
     } else {
         Ok(
-            PathBuf::from(std::env::var_os("HOME").ok_or("Нет домашнего каталога.")?)
-                .join(".config"),
+            PathBuf::from(std::env::var_os("HOME").ok_or("Нет домашнего каталога.")?).join(
+                if cfg!(target_os = "macos") {
+                    "Library/Application Support"
+                } else {
+                    ".config"
+                },
+            ),
         )
     }
 }
@@ -324,7 +329,8 @@ fn migrate_config_at(base: &Path) -> Result<PathBuf> {
         .map_err(|_| "Некорректный путь настроек.")?;
     // NOREPLACE protects an Eivro directory created concurrently. Rename preserves
     // private keys, backups and the proxy-recovery lock without copying secrets.
-    if unsafe {
+    #[cfg(target_os = "linux")]
+    let renamed = unsafe {
         libc::syscall(
             libc::SYS_renameat2,
             libc::AT_FDCWD,
@@ -333,8 +339,10 @@ fn migrate_config_at(base: &Path) -> Result<PathBuf> {
             to.as_ptr(),
             libc::RENAME_NOREPLACE,
         )
-    } != 0
-    {
+    };
+    #[cfg(target_os = "macos")]
+    let renamed = unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) };
+    if renamed != 0 {
         return Err(
             "Не удалось перенести настройки Velum в Eivro. Старые данные сохранены.".into(),
         );

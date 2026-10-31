@@ -151,7 +151,7 @@ def create_appimage(portable):
 def create_source():
     # Explicit whitelist: never ship work/, local tools, credentials or profiles.
     names = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".gitignore",
-             ".github", "src", "tests", "scripts", "docs", "assets", "packaging",
+             ".github", "src", "native", "build.rs", "tests", "scripts", "docs", "assets", "packaging",
              "examples", "README.md", "PRIVACY.md", "LICENSE", "THIRD_PARTY.md",
              "start.sh", "Eivro.desktop", "vendor/LICENSE", "vendor/xray.LICENSE"]
     with tarfile.open(DIST / f"eivro-{VERSION}-source.tar.gz", "w:gz", compresslevel=9) as archive:
@@ -200,7 +200,7 @@ def main():
         copy(stage / f"usr/libexec/eivro/{name}", portable / name, 0o755)
     for name in ("README.md", "PRIVACY.md", "LICENSE", "THIRD_PARTY.md"):
         copy(ROOT / name, portable / name, 0o644)
-    for name in ("VERIFICATION.md", "NETWORK-EXITS.md", "UPGRADE.md", "NAME.md", "REFERENCE.md", "DEVELOPMENT.md", "RELEASE.md"):
+    for name in ("VERIFICATION.md", "NETWORK-EXITS.md", "UPGRADE.md", "NAME.md", "REFERENCE.md", "DEVELOPMENT.md", "RELEASE.md", "MACOS.md"):
         copy(ROOT / "docs" / name, portable / "docs" / name, 0o644)
     copy(ROOT / "vendor/LICENSE", portable / "sing-box.LICENSE", 0o644)
     copy(ROOT / "vendor/xray.LICENSE", portable / "xray.LICENSE", 0o644)
@@ -211,7 +211,7 @@ def main():
     copy(ROOT / "packaging/io.eivro.tun.policy", stage / "usr/share/polkit-1/actions/io.eivro.tun.policy", 0o644)
     for name in ("README.md", "PRIVACY.md", "THIRD_PARTY.md"):
         copy(ROOT / name, stage / f"usr/share/doc/eivro/{name}", 0o644)
-    for name in ("VERIFICATION.md", "NETWORK-EXITS.md", "UPGRADE.md", "NAME.md", "REFERENCE.md", "DEVELOPMENT.md", "RELEASE.md"):
+    for name in ("VERIFICATION.md", "NETWORK-EXITS.md", "UPGRADE.md", "NAME.md", "REFERENCE.md", "DEVELOPMENT.md", "RELEASE.md", "MACOS.md"):
         copy(ROOT / "docs" / name, stage / "usr/share/doc/eivro/docs" / name, 0o644)
     copy(ROOT / "LICENSE", stage / "usr/share/licenses/eivro/LICENSE", 0o644)
     copy(ROOT / "vendor/LICENSE", stage / "usr/share/licenses/eivro/sing-box.LICENSE", 0o644)

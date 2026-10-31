@@ -1,4 +1,5 @@
 mod emoji;
+#[cfg_attr(target_os = "macos", path = "platform/macos/instance.rs")]
 mod instance;
 mod ui;
 
@@ -53,6 +54,11 @@ fn main() -> eframe::Result {
             }
         }
     }
+    #[cfg(target_os = "macos")]
+    if args.len() == 2 && args[1] == "--authorize" {
+        return eivro::platform::macos::authorization::worker()
+            .map_err(|e| eframe::Error::AppCreation(Box::new(std::io::Error::other(e))));
+    }
     #[cfg(not(feature = "qa"))]
     if eivro::privacy::harden().is_err() || eivro::privacy::silence_stdio().is_err() {
         std::process::exit(1);
@@ -72,7 +78,10 @@ fn main() -> eframe::Result {
         };
     // Winit's native Wayland backend cannot hide or reactivate a window.
     // XWayland provides both operations needed by a persistent tray client.
+    #[cfg(target_os = "linux")]
     let window_hiding = std::env::var_os("DISPLAY").is_some_and(|s| !s.is_empty());
+    #[cfg(target_os = "macos")]
+    let window_hiding = true;
     let initial_size = [960.0, 760.0];
     #[cfg(feature = "qa")]
     let initial_size = match std::env::var("EIVRO_QA_SIZE").as_deref() {
@@ -90,6 +99,7 @@ fn main() -> eframe::Result {
             .with_min_inner_size([820.0, 640.0]),
         renderer: eframe::Renderer::Glow,
         vsync: true,
+        #[cfg(target_os = "linux")]
         event_loop_builder: Some(Box::new(move |builder| {
             if window_hiding {
                 use winit::platform::x11::EventLoopBuilderExtX11;

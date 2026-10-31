@@ -1354,6 +1354,7 @@ impl App {
     }
 }
 /// Read desktop entries as data; never execute their commands or expand a shell.
+#[cfg(target_os = "linux")]
 fn applications() -> Vec<(String, String)> {
     let mut dirs = vec![
         PathBuf::from("/usr/share/applications"),
@@ -1426,6 +1427,11 @@ fn applications() -> Vec<(String, String)> {
     apps.sort_by_key(|(name, _)| name.to_lowercase());
     apps.dedup();
     apps
+}
+
+#[cfg(target_os = "macos")]
+fn applications() -> Vec<(String, String)> {
+    eivro::platform::macos::native::applications()
 }
 
 #[cfg(test)]

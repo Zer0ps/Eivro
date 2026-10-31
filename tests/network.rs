@@ -236,6 +236,7 @@ fn schema_three_is_backed_up_privately_before_the_new_format_is_written() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn interface_monitor_sleeps_and_stops_without_a_timer() {
     let monitor = eivro::network::Monitor::start(std::sync::Arc::new(|| {})).unwrap();
     let start = std::time::Instant::now();

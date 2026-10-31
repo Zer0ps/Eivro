@@ -1,3 +1,4 @@
+#![cfg(target_os = "linux")]
 //! Real core supervision over a pipe; Mode::Local never creates TUN or changes DNS.
 use eivro::{
     config::{ConnectRequest, Mode},

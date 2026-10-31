@@ -16,6 +16,11 @@ ARCHES = {
 }
 
 
+DARWIN_ARCHES = {
+    "x86_64": ("64", "8e5169b429e76ce5f550c8294db465bc259f30c158ba900aa40802b76ad2f66e"),
+    "arm64": ("arm64-v8a", "926cc55fda2a8757dabe4f22dc98772f218ace025f101bd0b68aee232e59d5dc"),
+}
+
 def check_version():
     try:
         result = subprocess.run(
@@ -34,8 +39,9 @@ def main():
     if parser.parse_args().check:
         check_version()
         return
-    arch, digest = ARCHES[platform.machine()]
-    url = f"https://github.com/XTLS/Xray-core/releases/download/v{VERSION}/Xray-linux-{arch}.zip"
+    system = "macos" if platform.system() == "Darwin" else "linux"
+    arch, digest = (DARWIN_ARCHES if system == "macos" else ARCHES)[platform.machine()]
+    url = f"https://github.com/XTLS/Xray-core/releases/download/v{VERSION}/Xray-{system}-{arch}.zip"
     result = subprocess.run(["curl", "--noproxy", "*", "-fL", "--silent", "--show-error", "--connect-timeout", "15", "--max-time", "120", "--max-filesize", "134217728", "--proto", "=https", "--proto-redir", "=https", url], stdout=subprocess.PIPE, check=True)
     if hashlib.sha256(result.stdout).hexdigest() != digest:
         raise SystemExit("Xray checksum mismatch; nothing installed")

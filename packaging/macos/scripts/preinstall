@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+# Restore the old package's settings before replacing its executable. Installer
+# has already authenticated the administrator; no password is handled here.
+if [ "${3:-/}" != / ]; then
+    echo 'Eivro must be installed on the running system volume.' >&2
+    exit 1
+fi
+if /bin/launchctl print system/io.eivro.tun >/dev/null 2>&1; then
+    /bin/launchctl bootout system/io.eivro.tun
+fi
+helper=/Library/PrivilegedHelperTools/io.eivro/eivro-tun
+if [ -f "$helper" ] && [ ! -L "$helper" ]; then
+    [ "$(/usr/bin/stat -f '%u' "$helper")" = 0 ]
+    "$helper" --release
+fi

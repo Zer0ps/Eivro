@@ -16,6 +16,11 @@ ARCHES = {
     "aarch64": ("arm64", "436441f76ee2f7fe21b5b2d426d3cb261a480455a704865789ad533e4273ec26"),
 }
 
+DARWIN_ARCHES = {
+    "x86_64": ("amd64", "eae86b9b033bba50b7c44ab719e4bfac0aca05efd28483390ed3aa510f32db25"),
+    "arm64": ("arm64", "0d8c7f5ed5d587b0f1a5e9772a708ec3bfa4ac4c9329604b01d8d9c2ba406838"),
+}
+
 def check_version():
     try:
         result = subprocess.run(
@@ -34,8 +39,9 @@ def main():
     if parser.parse_args().check:
         check_version()
         return
-    arch, digest = ARCHES[platform.machine()]
-    name = f"sing-box-{VERSION}-linux-{arch}"
+    system = "darwin" if platform.system() == "Darwin" else "linux"
+    arch, digest = (DARWIN_ARCHES if system == "darwin" else ARCHES)[platform.machine()]
+    name = f"sing-box-{VERSION}-{system}-{arch}"
     url = f"https://github.com/SagerNet/sing-box/releases/download/v{VERSION}/{name}.tar.gz"
     with urllib.request.urlopen(url, timeout=60) as response:
         data = response.read(128 * 1024 * 1024)

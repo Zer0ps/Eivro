@@ -1,8 +1,8 @@
-name: Linux packages
+name: Desktop packages
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, 'macos/**']
     tags: ['v*']
   pull_request:
   workflow_dispatch:
@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: linux-packages-${{ github.workflow }}-${{ github.ref }}
+  group: desktop-packages-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
@@ -82,9 +82,70 @@ jobs:
           DISTRIBUTION: ${{ matrix.distribution }}
         run: scripts/smoke-container.sh "$DISTRIBUTION"
 
+  macos:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            architecture: arm64
+          - runner: macos-15-intel
+            architecture: x86_64
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check toolchain and release metadata
+        run: |
+          rustup show active-toolchain
+          python3 scripts/check-release.py
+      - name: Fetch verified macOS cores
+        run: |
+          python3 scripts/fetch-core.py
+          python3 scripts/fetch-xray.py
+      - name: Compile native bridge, lint and test
+        run: |
+          cargo fmt --all --check
+          cargo clippy --locked --lib --bins -- -D warnings
+          cargo test --locked --lib --bin eivro
+          cargo test --locked --test catalog --test policy --test subscriptions --test subscription_compat
+      - name: Build application and installer
+        run: ./scripts/build-macos.sh
+      - name: Verify and install in the disposable runner
+        run: |
+          (cd dist && shasum -a 256 -c "SHA256SUMS-macos-${{ matrix.architecture }}")
+          sudo installer -pkg "dist/Eivro-$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')-macos-${{ matrix.architecture }}.pkg" -target /
+          python3 scripts/smoke-macos.py
+      - name: Remove test installation
+        if: always()
+        run: |
+          if [ -f /Applications/Eivro.app/Contents/Resources/uninstall.sh ]; then
+            sudo /Applications/Eivro.app/Contents/Resources/uninstall.sh
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: eivro-macos-${{ matrix.architecture }}
+          path: |
+            dist/*.pkg
+            dist/*.dmg
+            dist/SHA256SUMS-macos-*
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: eivro-visual-macos-${{ matrix.architecture }}
+          path: work/macos-smoke/*.png
+          if-no-files-found: warn
+          retention-days: 14
+
   release:
     if: startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
-    needs: [build, install]
+    needs: [build, install, macos]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -97,13 +158,18 @@ jobs:
         with:
           name: eivro-linux-x86_64
           path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: eivro-macos-*
+          path: dist
+          merge-multiple: true
       - name: Create a draft release after every check passed
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 scripts/check-release.py
-          (cd dist && sha256sum --check SHA256SUMS)
+          (cd dist && sha256sum --check SHA256SUMS && sha256sum --check SHA256SUMS-macos-*)
           gh release create "$GITHUB_REF_NAME" --verify-tag --draft \
-            --title "Eivro $GITHUB_REF_NAME · Stable" \
+            --title "Eivro $GITHUB_REF_NAME · macOS preview" \
             --notes-file docs/RELEASE.md \
-            dist/*.deb dist/*.rpm dist/*.tar.gz dist/SHA256SUMS
+            dist/*.deb dist/*.rpm dist/*.tar.gz dist/*.pkg dist/*.dmg dist/SHA256SUMS*
