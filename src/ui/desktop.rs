@@ -18,7 +18,7 @@ impl App {
         for event in events {
             match event {
                 DesktopEvent::Show => self.show_window(ctx),
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", windows))]
                 DesktopEvent::Settings => {
                     self.show_window(ctx);
                     self.catalog_open = false;
@@ -26,8 +26,7 @@ impl App {
                 }
                 DesktopEvent::Toggle => self.connect(ctx),
                 DesktopEvent::Quit => {
-                    self.quitting = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    self.request_quit(ctx);
                 }
                 DesktopEvent::TrayOnline(online) => {
                     self.tray_online = online;
@@ -41,7 +40,7 @@ impl App {
                     }
                 }
                 DesktopEvent::Network(online) => {
-                    #[cfg(target_os = "macos")]
+                    #[cfg(any(target_os = "macos", windows))]
                     self.schedule_network_scan(ctx);
                     self.recovery.offline = !online;
                     let initial = !self.network_seen;

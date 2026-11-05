@@ -1,7 +1,7 @@
 use crate::{
     CORE_VERSION, Result,
     config::{ConnectRequest, Mode, generate},
-    import::{EngineKind, Profile, parse_uri},
+    import::{EngineKind, parse_uri},
 };
 #[cfg(target_os = "linux")]
 use std::os::fd::{FromRawFd, OwnedFd};
@@ -26,7 +26,7 @@ use std::{
 pub use crate::platform::HELPER;
 pub use crate::platform::INSTALLED_CORE;
 pub use crate::platform::INSTALLED_XRAY;
-pub const MAX_REQUEST: usize = 128 * 1024;
+pub const MAX_REQUEST: usize = 2 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
 pub enum Event {
@@ -167,70 +167,8 @@ pub(crate) fn check_xray(core: &Path, config: &serde_json::Value) -> Result<()> 
     Ok(())
 }
 
-/// One offline core check for the complete imported Xray set, before storing keys.
-pub fn validate_profiles(profiles: &[Profile]) -> Result<()> {
-    let mut outbounds = Vec::new();
-    let mut singbox = Vec::new();
-    let mut first_singbox = None;
-    for profile in profiles {
-        let mut parsed = parse_uri(&profile.uri)?;
-        if parsed.engine == EngineKind::Xray {
-            parsed.outbound["tag"] = serde_json::json!(format!("endpoint-{}", outbounds.len()));
-            outbounds.push(parsed.outbound);
-        } else {
-            if first_singbox.is_none() {
-                first_singbox = Some(profile.uri.clone());
-            }
-            parsed.outbound["tag"] = serde_json::json!(if singbox.is_empty() {
-                "proxy".into()
-            } else {
-                format!("endpoint-{}", singbox.len())
-            });
-            singbox.push(parsed.outbound);
-        }
-    }
-    if !outbounds.is_empty() {
-        let core = xray_path()?;
-        xray_version_check(&core)?;
-        let mut config = crate::xray::config(outbounds[0].clone(), 2081);
-        config["outbounds"] = serde_json::json!(outbounds);
-        check_xray(&core, &config)?;
-    }
-    if let Some(uri) = first_singbox {
-        let core = core_path()?;
-        version_check(&core)?;
-        let mut config = generate(
-            &ConnectRequest {
-                connections: vec![],
-                probe_port: None,
-                policies: vec![],
-                kill_switch: false,
-                uri,
-                bypass: vec![],
-                port: 2080,
-                bridge_port: None,
-            },
-            Mode::Proxy,
-        )?;
-        singbox.push(serde_json::json!({"type":"direct","tag":"direct"}));
-        config["outbounds"] = serde_json::json!(singbox);
-        let mut child = child_command(&core)
-            .args(["check", "-c", "/dev/stdin"])
-            .stdin(Stdio::piped())
-            .spawn()
-            .map_err(|_| "Не удалось проверить sing-box.")?;
-        let written = child
-            .stdin
-            .take()
-            .ok_or("Нет канала sing-box.")?
-            .write_all(config.to_string().as_bytes());
-        let status = child.wait().map_err(|_| "Ошибка проверки sing-box.")?;
-        if written.is_err() || !status.success() {
-            return Err("sing-box отклонил параметры подключения. Импорт отменён.".into());
-        }
-    }
-    Ok(())
-}
+pub use crate::process_profiles::validate_profiles;
+pub(crate) const CONFIG_INPUT: &str = "/dev/stdin";
 
 #[cfg(target_os = "linux")]
 struct XrayChild(Child);
@@ -521,8 +459,40 @@ pub fn spawn_core(core: &Path, req: &ConnectRequest, mode: Mode) -> Result<Child
 }
 
 pub(crate) fn spawn_configuration(core: &Path, config: &serde_json::Value) -> Result<Child> {
+    spawn_configuration_with_state(core, config, None)
+}
+
+pub(crate) fn spawn_configuration_with_state(
+    core: &Path,
+    config: &serde_json::Value,
+    state: Option<(i32, u64)>,
+) -> Result<Child> {
+    let command = || {
+        let mut command = child_command(core);
+        if let Some((fd, maximum)) = state {
+            // Only this child inherits the validated state FD. Bounding file
+            // growth also bounds the tmpfs state under sustained DNS traffic.
+            unsafe {
+                command.pre_exec(move || {
+                    let flags = libc::fcntl(fd, libc::F_GETFD);
+                    if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    let limit = libc::rlimit {
+                        rlim_cur: maximum as libc::rlim_t,
+                        rlim_max: maximum as libc::rlim_t,
+                    };
+                    if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+        command
+    };
     let data = serde_json::to_vec(config).map_err(|_| "Ошибка конфигурации.")?;
-    let mut check = child_command(core)
+    let mut check = command()
         .args(["check", "-c", "/dev/stdin"])
         .stdin(Stdio::piped())
         .spawn()
@@ -536,7 +506,7 @@ pub(crate) fn spawn_configuration(core: &Path, config: &serde_json::Value) -> Re
     if written.is_err() || !valid.success() {
         return Err("Ядро отклонило конфигурацию. Проверьте параметры сервера.".into());
     }
-    let mut child = child_command(core)
+    let mut child = command()
         .args(["run", "-c", "/dev/stdin"])
         .stdin(Stdio::piped())
         .spawn()

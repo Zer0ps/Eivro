@@ -35,6 +35,7 @@ pub struct Interface {
     pub dns: Vec<IpAddr>,
 }
 
+#[cfg(unix)]
 pub fn validate_interface(name: &str) -> Result<()> {
     if name.is_empty()
         || name.len() >= libc::IFNAMSIZ
@@ -188,7 +189,7 @@ pub fn apply_dns(bytes: &[u8], links: &mut [Interface]) {
 }
 
 #[cfg(target_os = "linux")]
-fn bounded_output(program: &str, args: &[&str]) -> Result<Vec<u8>> {
+pub(crate) fn bounded_output(program: &str, args: &[&str]) -> Result<Vec<u8>> {
     use std::os::fd::AsRawFd;
     let mut child = Command::new(program)
         .env_clear()
@@ -339,3 +340,6 @@ impl Drop for Monitor {
 
 #[cfg(target_os = "macos")]
 pub use crate::platform::macos::network::interfaces;
+
+#[cfg(windows)]
+pub use crate::platform::windows::network::{interfaces, validate_interface};

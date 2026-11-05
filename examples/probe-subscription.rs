@@ -45,6 +45,7 @@ fn run() -> eivro::Result<()> {
             .port();
         let (session, events) = Session::start(
             ConnectRequest {
+                ru_preset: None,
                 connections: vec![],
                 probe_port: None,
                 policies: vec![],

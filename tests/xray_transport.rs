@@ -1,3 +1,5 @@
+#![cfg(target_os = "linux")]
+
 //! Loopback-only Xray transport regressions; no TUN, DNS, or user profiles.
 use eivro::{
     config::{ConnectRequest, Mode},
@@ -277,6 +279,7 @@ fn tcp_reality_links_transfer_data_through_the_eivro_session() {
         drop(local_reservation);
         let (session, events) = Session::start(
             ConnectRequest {
+                ru_preset: None,
                 connections: vec![],
                 uri,
                 port: local_port,

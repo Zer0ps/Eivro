@@ -1,8 +1,18 @@
 # Third-party components
 
+- RU-DIRECT preset data: [kyoresuas/ru-direct](https://github.com/kyoresuas/ru-direct), MIT.
+  Snapshot 2026-11-03, release commit `2669fc240bd64bf9692a17d7b828fe9b771112fb`.
+  Domains and service/all-country IP lists are bundled offline; URLs, revisions and
+  hashes are recorded in `assets/rules/ru-direct/source.json`. The upstream license
+  is included in packages as `ru-direct.LICENSE`. `scripts/update-ru-presets.py`
+  reproduces the reviewed snapshot without running upstream scripts.
+
 - sing-box **1.14.4**, SagerNet / nekohasekai. Source tag:
   https://github.com/SagerNet/sing-box/tree/v1.14.4
-  Official binary and archive checksums are pinned in `scripts/fetch-core.py`.
+  macOS/Windows use pinned official archives. Linux builds **1.14.4-eivro.2**
+  from the same upstream commit with the FakeIP allocation patch in
+  `patches/sing-box`. Source, Go SDK and patch hashes are pinned in
+  `patches/sing-box/source.json`; `scripts/build-core.py` reproduces the build.
   Upstream license and naming condition are reproduced in `vendor/LICENSE`
   and in every package as `sing-box.LICENSE`. Eivro is an independent project
   and does not imply endorsement by SagerNet or Happ.
@@ -13,9 +23,19 @@
   in the source project and `xray.LICENSE` in binary packages.
 - egui / eframe **0.33.3**, MIT OR Apache-2.0:
   https://github.com/emilk/egui/tree/0.33.3
+  A small Windows-only event-loop backport is kept in `vendor/eframe`;
+  its origin, changes and removal condition are documented in `EIVRO-PATCH.md`.
+  The upstream licenses are included with the Windows package.
 - Other Rust dependency versions and origins are fixed in `Cargo.lock`.
   `cargo metadata --locked` reports package licenses. Cargo's default features
   are disabled for eframe; no browser engine is embedded.
+- Windows core archives and every bundled member are pinned in
+  `scripts/windows-cores.json`. The official sing-box archive also includes
+  `libcronet.dll`. Wintun is supplied with the official Xray archive; its upstream
+  license is shipped as `wintun.LICENSE`. Source: https://www.wintun.net/.
+- Windows installers are compiled with Inno Setup 7.1.1. The compiler is a
+  build-time tool, verified by archive checksum and publisher signature in
+  `scripts/fetch-inno.ps1`. Source and license: https://github.com/jrsoftware/issrc.
 - AppImage build tools are downloaded only at build time, checksum-verified,
   and not invoked by the running application. AppImage runtime source:
   https://github.com/AppImage/type2-runtime

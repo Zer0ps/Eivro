@@ -46,6 +46,8 @@ with tarfile.open(DIST / f'eivro-{VERSION}-linux-amd64.tar.gz') as archive:
         assert sha(archive.extractfile(member).read()) == hashes[name]
     assert archive.getmember(prefix + 'NotoEmoji.LICENSE').isfile()
     assert archive.getmember(prefix + 'Inter.LICENSE').isfile()
+    assert archive.extractfile(prefix + 'ru-direct.LICENSE').read() == (ROOT/'assets/rules/ru-direct/LICENSE').read_bytes()
+    assert archive.extractfile(prefix + 'ru-direct-source.json').read() == (ROOT/'assets/rules/ru-direct/source.json').read_bytes()
 checks['portable'] = 'PASS: release GUI/cores SHA256, root/0755, font license'
 
 deb = DIST / f'eivro_{PKGVERSION}_amd64.deb'
@@ -60,6 +62,7 @@ with tarfile.open(fileobj=io.BytesIO(run(['ar', 'p', deb, 'data.tar.gz']))) as a
     ET.fromstring(archive.extractfile('usr/share/polkit-1/actions/io.eivro.tun.policy').read())
     assert archive.getmember('usr/share/licenses/eivro/NotoEmoji.LICENSE').isfile()
     assert archive.getmember('usr/share/licenses/eivro/Inter.LICENSE').isfile()
+    assert archive.extractfile('usr/share/licenses/eivro/ru-direct.LICENSE').read() == (ROOT/'assets/rules/ru-direct/LICENSE').read_bytes()
     for name in legacy_launchers:
         member = archive.getmember(name)
         assert member.mode == 0o755 and member.uid == member.gid == 0
@@ -85,6 +88,8 @@ for name in sources:
     assert (mode, user, group, digest) == ('-rwxr-xr-x', 'root', 'root', hashes[name])
 assert '/usr/share/licenses/eivro/NotoEmoji.LICENSE' in entries
 assert '/usr/share/licenses/eivro/Inter.LICENSE' in entries
+assert '/usr/share/licenses/eivro/ru-direct.LICENSE' in entries
+assert 'libxkbcommon-x11' in run(['rpm', '-qp', '--requires', rpm]).decode().splitlines()
 for name in legacy_launchers:
     assert entries['/' + name] == ['-rwxr-xr-x', 'root', 'root', sha(launcher_bytes)]
 assert '/usr/libexec/velum/velum-tun' not in entries
@@ -115,7 +120,9 @@ checks['maximum_required_glibc'] = max(versions, key=lambda v: tuple(map(int, v.
 checks['xray_version'] = run([sources['xray'], 'version']).decode().splitlines()[0]
 assert checks['xray_version'].startswith('Xray 26.10.21 ')
 checks['sing_box_version'] = run([sources['sing-box'], 'version']).decode().splitlines()[0]
-assert checks['sing_box_version'] == 'sing-box version 1.14.4'
+pin = json.loads((ROOT / 'patches/sing-box/source.json').read_text())
+assert checks['sing_box_version'] == 'sing-box version ' + pin['version']
+assert sha((ROOT / 'patches/sing-box/fakeip-allocation.patch').read_bytes()) == pin['patch_sha256']
 with tarfile.open(DIST / f'eivro-{VERSION}-source.tar.gz') as archive:
     names = archive.getnames()
     assert all(name.startswith(f'eivro-{VERSION}-source/') for name in names)
@@ -124,9 +131,11 @@ with tarfile.open(DIST / f'eivro-{VERSION}-source.tar.gz') as archive:
     assert archive.extractfile(f'eivro-{VERSION}-source/src/process.rs').read() == (ROOT / 'src/process.rs').read_bytes()
     assert archive.extractfile(f'eivro-{VERSION}-source/tests/connection.rs').read() == (ROOT / 'tests/connection.rs').read_bytes()
     assert archive.extractfile(f'eivro-{VERSION}-source/docs/VERIFICATION.md').read() == (ROOT / 'docs/VERIFICATION.md').read_bytes()
-    for name in ['.github/workflows/release.yml', 'scripts/verify-packages.py', 'src/resolver.rs', 'tests/resolver.rs']:
+    for name in ['.github/workflows/release.yml', 'scripts/verify-packages.py', 'src/resolver.rs', 'tests/resolver.rs', 'patches/sing-box/source.json', 'patches/sing-box/fakeip-allocation.patch', 'scripts/build-core.py', 'docs/DNS-ROUTING.md']:
         assert archive.extractfile(f'eivro-{VERSION}-source/{name}').read() == (ROOT/name).read_bytes()
 checks['source'] = 'PASS: current version, supervisor/tests/docs match; no home/config/build directories'
+subprocess.run(['python3','scripts/update-ru-presets.py','--check'],cwd=ROOT,check=True)
+checks['ru_presets'] = 'PASS: pinned asset hashes, licenses and package provenance'
 subprocess.run(['sha256sum', '--check', 'SHA256SUMS'], cwd=DIST, check=True)
 (DIST / f'Eivro-{VERSION}-package-checks.json').write_text(json.dumps(checks, ensure_ascii=False, indent=2) + '\n')
 print(json.dumps(checks, ensure_ascii=False, indent=2))

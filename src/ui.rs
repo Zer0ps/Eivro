@@ -6,6 +6,7 @@ mod effects;
 mod navigation;
 mod rules;
 mod settings;
+mod shutdown;
 mod subscriptions;
 use self::rules::Editor;
 use eframe::egui::{self, Align2, Color32, FontId, RichText, Stroke, Vec2};
@@ -81,6 +82,12 @@ pub struct App {
     window_hiding: bool,
     hidden: bool,
     quitting: bool,
+    #[cfg(target_os = "linux")]
+    exit_ready: bool,
+    #[cfg(target_os = "linux")]
+    exit_result: Option<Receiver<eivro::Result<()>>>,
+    #[cfg(target_os = "linux")]
+    exit_error: Option<String>,
     background_start: bool,
     recovery: eivro::recovery::Recovery,
     network_seen: bool,
@@ -88,6 +95,8 @@ pub struct App {
     autostart: bool,
     instance: Option<crate::instance::Instance>,
     guard_session: bool,
+    #[cfg(windows)]
+    native_theme: Option<Theme>,
 }
 
 #[derive(Clone, Copy)]
@@ -170,17 +179,42 @@ impl App {
         app.desktop = Some(eivro::desktop::Desktop::start(Arc::new(move || {
             ctx.request_repaint()
         })));
+        #[cfg(windows)]
+        if app
+            .desktop
+            .as_ref()
+            .is_some_and(|desktop| desktop.bind_main_window(cc).is_err())
+        {
+            app.error = Some("Не удалось зарегистрировать завершение сеанса Windows.".into());
+        }
         app.background_start = std::env::args().any(|s| s == "--background");
         if let Err(error) = eivro::desktop::migrate_autostart() {
             app.error.get_or_insert(error);
         }
-        app.autostart = eivro::desktop::autostart_path().is_ok_and(|p| p.is_file());
+        #[cfg(unix)]
+        {
+            app.autostart = eivro::desktop::autostart_path().is_ok_and(|p| p.is_file());
+        }
+        #[cfg(windows)]
+        {
+            app.autostart = eivro::desktop::autostart_enabled();
+        }
         if app.settings.autoconnect && app.settings.selected_profile().is_some() {
             app.want_connected = true;
             app.recovery.schedule(std::time::Instant::now());
         }
         #[cfg(feature = "qa")]
         match std::env::var("EIVRO_QA_PAGE").as_deref() {
+            #[cfg(target_os = "linux")]
+            Ok("exit-error") => {
+                app.page = Page::Settings;
+                app.exit_error = Some("Не удалось сохранить счётчики DNS.".into());
+            }
+            Ok(page @ ("ru-services" | "ru-all" | "ru-browse")) => {
+                let mut editor = Editor::new(&app.settings);
+                editor.preview_preset(page != "ru-services", page == "ru-browse");
+                app.editor = Some(editor);
+            }
             Ok("rules") => app.editor = Some(Editor::new(&app.settings)),
             Ok("rules-selected") => {
                 let mut editor = Editor::new(&app.settings);
@@ -286,6 +320,12 @@ impl App {
             window_hiding: true,
             hidden: false,
             quitting: false,
+            #[cfg(target_os = "linux")]
+            exit_ready: false,
+            #[cfg(target_os = "linux")]
+            exit_result: None,
+            #[cfg(target_os = "linux")]
+            exit_error: None,
             background_start: false,
             recovery: Default::default(),
             network_seen: false,
@@ -293,6 +333,8 @@ impl App {
             autostart: false,
             instance: None,
             guard_session: false,
+            #[cfg(windows)]
+            native_theme: None,
         }
     }
 
@@ -312,6 +354,12 @@ impl App {
                     "Трей недоступен. Для выхода используйте «Завершить Eivro» в настройках."
                         .into(),
                 );
+            }
+        } else {
+            #[cfg(target_os = "linux")]
+            if ctx.input(|i| i.viewport().close_requested()) && !self.exit_ready {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.request_quit(ctx);
             }
         }
     }
@@ -452,7 +500,8 @@ impl App {
         });
     }
     fn auto_refresh(&mut self, ctx: &egui::Context) {
-        if self.import_result.is_some()
+        if self.quitting
+            || self.import_result.is_some()
             || self.import_open
             || self.recovery.offline
             || self.recovery.sleeping
@@ -492,6 +541,9 @@ impl App {
         }
     }
     fn connect(&mut self, ctx: &egui::Context) {
+        if self.quitting {
+            return;
+        }
         let wanted = self.want_connected;
         self.recovery.cancel();
         if let Some(session) = &mut self.session {
@@ -513,15 +565,26 @@ impl App {
         }
     }
     fn start_connection(&mut self, ctx: &egui::Context) {
+        if self.quitting {
+            return;
+        }
         if self.settings.mode != Mode::Tun || !self.settings.kill_switch {
             self.guard_session = false;
         }
-        if (self.settings.mode != Mode::Tun || !self.settings.kill_switch)
-            && let Err(e) = self.tun.release()
-        {
-            self.error = Some(e);
-            self.want_connected = false;
-            return;
+        if self.settings.mode != Mode::Tun || !self.settings.kill_switch {
+            #[cfg(target_os = "linux")]
+            let released = if self.settings.mode == Mode::Tun {
+                self.tun.prepare()
+            } else {
+                self.tun.release()
+            };
+            #[cfg(not(target_os = "linux"))]
+            let released = self.tun.release();
+            if let Err(e) = released {
+                self.error = Some(e);
+                self.want_connected = false;
+                return;
+            }
         }
         let Some(profile) = self.settings.selected_profile() else {
             self.want_connected = false;
@@ -532,6 +595,9 @@ impl App {
             return;
         };
         let req = ConnectRequest {
+            ru_preset: self.settings.routing_profiles[self.settings.selected_routing]
+                .ru_preset
+                .clone(),
             connections: self.settings.connections.clone(),
             probe_port: None,
             kill_switch: self.settings.kill_switch && self.settings.mode == Mode::Tun,
@@ -580,8 +646,21 @@ fn contrast(c: Color32) -> Color32 {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        #[cfg(windows)]
+        if self.native_theme != Some(self.settings.theme) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(
+                if self.settings.theme == Theme::Dark {
+                    egui::SystemTheme::Dark
+                } else {
+                    egui::SystemTheme::Light
+                },
+            ));
+            self.native_theme = Some(self.settings.theme);
+        }
         self.desktop_events(ctx);
         self.receive(ctx);
+        #[cfg(target_os = "linux")]
+        self.poll_quit(ctx);
         self.recover(ctx);
         self.auto_refresh(ctx);
         if let Some(desktop) = &mut self.desktop {
@@ -705,7 +784,14 @@ impl eframe::App for App {
         self.shell(ctx, p);
         self.catalog(ctx, p);
         self.dialogs(ctx, p);
-        let modal_open = self.navigation_overlay
+        #[cfg(target_os = "linux")]
+        self.quit_dialog(ctx, p);
+        #[cfg(target_os = "linux")]
+        let exit_modal = self.exit_error.is_some();
+        #[cfg(not(target_os = "linux"))]
+        let exit_modal = false;
+        let modal_open = exit_modal
+            || self.navigation_overlay
             || self.catalog_open
             || self.import_open
             || self.delete_server
@@ -821,8 +907,20 @@ mod tests {
             if target.is_none() {
                 document.source = Some("https://other.example/sub/synthetic".into());
             }
+            #[cfg(unix)]
             let temp = dir.join(format!(".settings-{}.tmp", std::process::id()));
+            #[cfg(unix)]
             std::fs::write(&temp, b"Synthetic write conflict").unwrap();
+            #[cfg(windows)]
+            let write_conflict = {
+                use std::os::windows::fs::OpenOptionsExt;
+                // A reader which does not share DELETE prevents atomic replace.
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .share_mode(1)
+                    .open(&path)
+                    .unwrap()
+            };
             let (tx, rx) = mpsc::channel();
             app.import_result = Some(rx);
             app.import_target = target;
@@ -841,9 +939,15 @@ mod tests {
                 assert_eq!(app.import_text, "Synthetic input");
                 app.error.as_ref().unwrap()
             };
+            #[cfg(unix)]
             assert_eq!(error, "Не удалось создать временный файл настроек.");
+            #[cfg(windows)]
+            assert_eq!(error, "Не удалось заменить настройки.");
 
+            #[cfg(unix)]
             std::fs::remove_file(&temp).unwrap();
+            #[cfg(windows)]
+            drop(write_conflict);
             let (tx, rx) = mpsc::channel();
             app.import_result = Some(rx);
             app.import_target = target;

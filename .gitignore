@@ -15,3 +15,5 @@ __pycache__/
 /.aws/
 AGENTS.md
 SKILL.md
+
+/vendor/windows/

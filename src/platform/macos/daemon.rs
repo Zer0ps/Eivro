@@ -675,6 +675,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         let request = ConnectRequest {
+            ru_preset: None,
             uri: format!("ss://chacha20-ietf-poly1305:ci-loopback-only@127.0.0.1:{server_port}"),
             bypass: vec![],
             port,

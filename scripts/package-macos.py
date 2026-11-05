@@ -82,6 +82,8 @@ def main():
         copy(ROOT / name, app / 'Resources' / name)
     for document in (ROOT / 'docs').glob('*.md'):
         copy(document, app / 'Resources/docs' / document.name)
+    copy(ROOT / 'assets/rules/ru-direct/LICENSE', app / 'Resources/ru-direct.LICENSE')
+    copy(ROOT / 'assets/rules/ru-direct/source.json', app / 'Resources/ru-direct-source.json')
     for source, name in [('vendor/LICENSE', 'sing-box.LICENSE'), ('vendor/xray.LICENSE', 'xray.LICENSE'), ('assets/Inter.LICENSE', 'Inter.LICENSE'), ('assets/NotoEmoji.LICENSE', 'NotoEmoji.LICENSE')]:
         copy(ROOT / source, app / 'Resources' / name)
     copy(ROOT / 'packaging/macos/io.eivro.tun.plist', stage / 'Library/LaunchDaemons/io.eivro.tun.plist')

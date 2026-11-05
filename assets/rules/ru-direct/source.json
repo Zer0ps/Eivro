@@ -1,0 +1,19 @@
+{
+  "repository": "https://github.com/kyoresuas/ru-direct",
+  "release_commit": "2669fc240bd64bf9692a17d7b828fe9b771112fb",
+  "source_commit": "0b3f000a30fc753630b0c12a26353b9b6e72a8c7",
+  "snapshot": "2026-11-03",
+  "upstream_sha256": {
+    "ru-standard.singbox.json": "c5dbccfcb01b62298b35736f86e23ecd1fbac5a491da26c7d5ef99a9a48719b8",
+    "ru-full.singbox.json": "02ec2943dca8e3a46d48af7f540d84c789a3dc4d529a1b9bca5e15ecb60e77f4"
+  },
+  "domains": 1683,
+  "services_networks": 700,
+  "all_networks": 10845,
+  "files": {
+    "domains.txt": "1240c1df7d98d28429383d670589ccb9e57e31a044cd12246eaeffc029861953",
+    "services-ip.txt": "f8f44cc6e7f802db9fc013360950e30f234c7c5c4d03a79fb183763da4ac3aa6",
+    "all-ip.txt": "47366f07a1733e80fae2cdb84e1f753b9da416a18bf598dd71302dab1e34577e",
+    "LICENSE": "1126322e2cc8d165adc4c792eeb195717de2bcc7b39be1ce77959d78e87ef685"
+  }
+}

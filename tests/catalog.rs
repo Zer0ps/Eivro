@@ -85,7 +85,7 @@ fn metadata_cannot_introduce_commands_or_unbounded_refresh() {
 fn old_settings_keep_all_servers_selection_and_rules() {
     let mut settings:Settings=serde_json::from_value(json!({"schema":1,"profiles":[profile("A",443),profile("B",444)],"selected":1,"bypass":["*.example.test"],"mode":"tun","accent":[0,0,0]})).unwrap();
     settings.migrate().unwrap();
-    assert_eq!(settings.schema, 4);
+    assert_eq!(settings.schema, 5);
     assert_eq!(settings.subscriptions.len(), 1);
     assert_eq!(settings.selected_profile().unwrap().name, "B");
     assert!(settings.bypass.is_empty());
@@ -226,6 +226,7 @@ fn provider_interval_custom_interval_and_manual_are_distinct() {
     assert!(sub.due_at().is_none());
 }
 #[test]
+#[cfg(unix)]
 fn migration_save_keeps_one_private_rollback_snapshot() {
     use std::os::unix::fs::PermissionsExt;
     let dir = std::env::temp_dir().join(format!("eivro-migration-{}", std::process::id()));

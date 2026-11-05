@@ -1,5 +1,18 @@
 use std::{env, path::PathBuf, process::Command};
 fn main() {
+    #[cfg(windows)]
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        println!("cargo:rerun-if-changed=packaging/windows/eivro.manifest");
+        println!("cargo:rerun-if-changed=assets/io.eivro.Client.ico");
+        winresource::WindowsResource::new()
+            .set_icon("assets/io.eivro.Client.ico")
+            .set_manifest_file("packaging/windows/eivro.manifest")
+            .set("ProductName", "Eivro")
+            .set("FileDescription", "Eivro")
+            .compile()
+            .expect("Windows resources must compile with the Windows SDK");
+        return;
+    }
     println!("cargo:rerun-if-changed=native/macos/eivro.m");
     println!("cargo:rerun-if-changed=native/macos/eivro.h");
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {

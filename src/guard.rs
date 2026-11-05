@@ -2,6 +2,7 @@
 use crate::Result;
 use std::{
     io::{Read, Write},
+    os::fd::AsRawFd,
     path::Path,
     process::{Command, Stdio},
 };
@@ -14,11 +15,32 @@ pub struct Guard {
 #[derive(Default)]
 pub struct SystemBackend {
     guard: Option<Guard>,
+    dns: Option<crate::domain_dns::state::State>,
+    dns_active: bool,
 }
 impl crate::tun::Backend for SystemBackend {
     fn start(&mut self, req: &crate::config::ConnectRequest) -> Result<crate::tun::Running> {
         crate::config::generate(req, crate::config::Mode::Tun)?;
         crate::process::tun_preflight()?;
+        crate::domain_dns::check_ranges()?;
+        let core = Path::new(crate::process::INSTALLED_CORE);
+        crate::process::version_check(core)?;
+        let mut config = crate::config::generate_with_network(
+            req,
+            crate::config::Mode::Tun,
+            &crate::network::interfaces(),
+        )?;
+        crate::domain_dns::configure(&mut config, req)?;
+        if self.dns.is_none() {
+            self.dns = Some(crate::domain_dns::state::State::open()?);
+        }
+        let dns = self.dns.as_ref().unwrap();
+        dns.validate()?;
+        let fd = dns.file.as_raw_fd();
+        config["experimental"]["cache_file"] = serde_json::json!({
+            "enabled":true,"path":format!("/proc/self/fd/{fd}"),
+            "store_fakeip":true,"store_dns":false
+        });
         if req.kill_switch {
             if self.guard.is_none() {
                 self.guard = Some(Guard::arm()?);
@@ -26,16 +48,55 @@ impl crate::tun::Backend for SystemBackend {
         } else if let Some(mut guard) = self.guard.take() {
             guard.release()?;
         }
+        // Resolve the VPN endpoint before the TUN can intercept system DNS.
+        // Keep the hostname in the outbound so TLS, WS Host and gRPC authority
+        // retain their original values; only its bootstrap answer is pinned.
+        let parsed = crate::import::parse_uri(&req.uri)?;
+        if parsed.engine == crate::import::EngineKind::SingBox
+            && parsed.host.parse::<std::net::IpAddr>().is_err()
+        {
+            let addresses = if req.kill_switch {
+                vec![resolve(&parsed.host)?]
+            } else {
+                crate::resolver::resolve_host(
+                    &parsed.host,
+                    443,
+                    std::time::Instant::now() + std::time::Duration::from_secs(10),
+                    None,
+                )
+                .map_err(|_| "Не удалось разрешить адрес VPN-сервера.")?
+                .into_iter()
+                .map(|address| address.ip())
+                .collect()
+            };
+            let mut hosts = serde_json::Map::new();
+            hosts.insert(parsed.host, serde_json::json!(addresses));
+            config["dns"]["servers"][0] = serde_json::json!({
+                "type":"hosts","tag":"bootstrap","predefined":hosts
+            });
+        }
         let mut secondary = if req.kill_switch {
             crate::process::protected_xray(req)?
         } else {
             None
         };
-        match crate::process::spawn_core(
-            Path::new(crate::process::INSTALLED_CORE),
-            req,
-            crate::config::Mode::Tun,
-        ) {
+        let started = crate::process::spawn_configuration_with_state(
+            core,
+            &config,
+            Some((fd, crate::domain_dns::state::MAX_BYTES)),
+        )
+        .and_then(|mut primary| {
+            self.dns_active = true;
+            if let Err(error) = crate::process::ready(&mut primary, req.port)
+                .and_then(|_| dns.initialized())
+                .and_then(|_| crate::domain_dns::flush_system_cache())
+            {
+                crate::process::terminate(&mut primary);
+                return Err(error);
+            }
+            Ok(primary)
+        });
+        match started {
             Ok(primary) => Ok(crate::tun::Running { primary, secondary }),
             Err(e) => {
                 if let Some(child) = &mut secondary {
@@ -45,11 +106,36 @@ impl crate::tun::Backend for SystemBackend {
             }
         }
     }
-    fn stop(&mut self, preserve: bool) -> Result<()> {
+    fn stop(&mut self, preserve: bool, preserve_dns: bool) -> Result<()> {
         if !preserve && let Some(mut guard) = self.guard.take() {
             guard.release()?;
         }
+        if !preserve_dns && self.dns_active {
+            crate::domain_dns::flush_system_cache()?;
+            self.dns_active = false;
+        }
         Ok(())
+    }
+    fn retire(&mut self) -> Result<()> {
+        if self.dns.is_none() {
+            self.dns = crate::domain_dns::state::State::open_existing()?;
+            if self.dns.is_some() {
+                crate::domain_dns::flush_system_cache()?;
+            }
+        }
+        if let Some(dns) = self.dns.as_mut() {
+            let core = Path::new(crate::process::INSTALLED_CORE);
+            crate::process::version_check(core)?;
+            dns.retire(core)?;
+        }
+        Ok(())
+    }
+}
+impl Drop for SystemBackend {
+    fn drop(&mut self) {
+        if self.dns_active {
+            let _ = crate::domain_dns::flush_system_cache();
+        }
     }
 }
 impl Guard {

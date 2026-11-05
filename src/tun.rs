@@ -14,12 +14,15 @@ use std::{
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CommandMessage {
+    Retire {},
     Start {
         request: ConnectRequest,
     },
     Stop {
         #[serde(default)]
         preserve_protection: bool,
+        #[serde(default)]
+        preserve_dns: bool,
     },
 }
 pub struct Running {
@@ -36,7 +39,10 @@ impl Drop for Running {
 }
 pub trait Backend {
     fn start(&mut self, request: &ConnectRequest) -> Result<Running>;
-    fn stop(&mut self, preserve_protection: bool) -> Result<()>;
+    fn stop(&mut self, preserve_protection: bool, preserve_dns: bool) -> Result<()>;
+    fn retire(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
 struct LocalBackend<F>(F);
 impl<F: FnMut(&ConnectRequest) -> Result<Child>> Backend for LocalBackend<F> {
@@ -46,7 +52,7 @@ impl<F: FnMut(&ConnectRequest) -> Result<Child>> Backend for LocalBackend<F> {
             secondary: None,
         })
     }
-    fn stop(&mut self, _: bool) -> Result<()> {
+    fn stop(&mut self, _: bool, _: bool) -> Result<()> {
         Ok(())
     }
 }
@@ -106,11 +112,24 @@ pub fn serve_backend(
                 core.take();
                 pid.take();
                 companion.take();
+                let mut failure = None;
+                let mut failure_tag = "START_ERROR";
                 let reply = match message {
+                    CommandMessage::Retire {} => {
+                        match backend.stop(false, false).and_then(|_| backend.retire()) {
+                            Ok(()) => b"RETIRED\n".as_slice(),
+                            Err(error) => {
+                                failure = Some(error);
+                                failure_tag = "RETIRE_ERROR";
+                                b"RETIRE_ERROR\n".as_slice()
+                            }
+                        }
+                    }
                     CommandMessage::Stop {
                         preserve_protection,
+                        preserve_dns,
                     } => {
-                        if backend.stop(preserve_protection).is_ok() {
+                        if backend.stop(preserve_protection, preserve_dns).is_ok() {
                             b"STOPPED\n".as_slice()
                         } else {
                             b"STOP_ERROR\n".as_slice()
@@ -130,10 +149,20 @@ pub fn serve_backend(
                                 pid = Some(p);
                                 b"READY\n".as_slice()
                             }
-                            Err(_) => b"START_ERROR\n".as_slice(),
+                            Err(error) => {
+                                failure = Some(error);
+                                b"START_ERROR\n".as_slice()
+                            }
                         }
                     }
                 };
+                // A bounded, single-line reason is shown only in the local UI;
+                // the helper still writes no diagnostic or traffic log.
+                let detail = failure
+                    .filter(|error| error.len() <= 384 && !error.chars().any(char::is_control))
+                    .and_then(|error| serde_json::to_string(&error).ok())
+                    .map(|error| format!("{failure_tag} {error}\n").into_bytes());
+                let reply = detail.as_deref().unwrap_or(reply);
                 output
                     .write_all(reply)
                     .and_then(|_| output.flush())
@@ -151,10 +180,24 @@ pub struct Controller {
     helper: Mutex<Option<Helper>>,
 }
 impl Controller {
-    pub fn release(&self) -> Result<()> {
+    pub fn retire(&self) -> Result<()> {
         let mut holder = self.helper.lock().map_err(|_| "Ошибка управления TUN.")?;
         if let Some(helper) = holder.as_mut() {
-            helper.stop(false)?;
+            helper.retire()?;
+        }
+        holder.take();
+        Ok(())
+    }
+    pub fn release(&self) -> Result<()> {
+        self.release_with_dns(false)
+    }
+    pub fn prepare(&self) -> Result<()> {
+        self.release_with_dns(true)
+    }
+    fn release_with_dns(&self, preserve_dns: bool) -> Result<()> {
+        let mut holder = self.helper.lock().map_err(|_| "Ошибка управления TUN.")?;
+        if let Some(helper) = holder.as_mut() {
+            helper.stop(false, preserve_dns)?;
         }
         Ok(())
     }
@@ -199,10 +242,10 @@ impl Controller {
             }
         })();
         // Stop the core, keep the helper/authorization until the application closes.
-        let preserve =
-            req.kill_switch && (restart_requested(watch) || (result.is_err() && !cancelled(watch)));
+        let reconnecting = restart_requested(watch) || (result.is_err() && !cancelled(watch));
+        let preserve = req.kill_switch && reconnecting;
         let stopped = if started || helper.request_sent {
-            helper.stop(preserve)
+            helper.stop(preserve, reconnecting)
         } else {
             Ok(())
         };
@@ -273,7 +316,7 @@ impl Helper {
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(vec![]),
             Err(_) => return Err("Ошибка ответа TUN.".into()),
         }
-        if self.pending.len() > 256 {
+        if self.pending.len() > 1024 {
             return Err("Неверный ответ TUN.".into());
         }
         let mut lines = vec![];
@@ -335,6 +378,13 @@ impl Helper {
             }
             if fds[3].revents != 0 {
                 let lines = self.read_lines()?;
+                if let Some(detail) = lines
+                    .iter()
+                    .find_map(|line| line.strip_prefix("START_ERROR "))
+                {
+                    return Err(serde_json::from_str::<String>(detail)
+                        .unwrap_or_else(|_| "Не удалось запустить TUN.".into()));
+                }
                 if lines
                     .iter()
                     .any(|s| s == "ERROR" || s == "START_ERROR" || s == "FAILED")
@@ -353,15 +403,18 @@ impl Helper {
             }
         }
     }
-    fn stop(&mut self, preserve_protection: bool) -> Result<()> {
+    fn retire(&mut self) -> Result<()> {
+        self.command_reply(b"{\"command\":\"retire\"}\n", "RETIRED", "RETIRE_ERROR")
+    }
+    fn stop(&mut self, preserve_protection: bool, preserve_dns: bool) -> Result<()> {
+        self.command_reply(format!("{{\"command\":\"stop\",\"preserve_protection\":{preserve_protection},\"preserve_dns\":{preserve_dns}}}\n").as_bytes(), "STOPPED", "STOP_ERROR")
+    }
+    fn command_reply(&mut self, message: &[u8], success: &str, failure: &str) -> Result<()> {
         // A cancelled partial write cannot safely be followed by another JSON frame.
         // Closing the helper pipe in Drop remains the fallback for all protocol errors.
         let input = self.input.as_mut().ok_or("Канал TUN закрыт.")?;
         input
-            .write_all(
-                format!("{{\"command\":\"stop\",\"preserve_protection\":{preserve_protection}}}\n")
-                    .as_bytes(),
-            )
+            .write_all(message)
             .map_err(|_| "Не удалось остановить TUN.")?;
         let end = Instant::now() + Duration::from_secs(25);
         loop {
@@ -381,10 +434,20 @@ impl Helper {
             }
             if fds[0].revents != 0 {
                 let lines = self.read_lines()?;
-                if lines.iter().any(|s| s == "STOP_ERROR" || s == "ERROR") {
+                if let Some(detail) = lines
+                    .iter()
+                    .find_map(|line| line.strip_prefix(&format!("{failure} ")))
+                    .and_then(|detail| serde_json::from_str::<String>(detail).ok())
+                {
+                    return Err(detail);
+                }
+                if lines.iter().any(|s| s == failure || s == "ERROR") {
+                    if failure == "RETIRE_ERROR" {
+                        return Err("Не удалось безопасно очистить память DNS.".into());
+                    }
                     return Err("Не удалось снять защиту TUN. Завершите Eivro и используйте восстановление из README.".into());
                 }
-                if lines.iter().any(|s| s == "STOPPED") {
+                if lines.iter().any(|s| s == success) {
                     return Ok(());
                 }
             }
@@ -426,6 +489,7 @@ mod tests {
             helper: Mutex::new(Some(Helper::from_child(child).unwrap())),
         };
         let request = ConnectRequest {
+            ru_preset: None,
             connections: vec![],
             uri: "synthetic".into(),
             bypass: vec![],
@@ -459,6 +523,7 @@ mod tests {
             helper: Mutex::new(Some(helper)),
         };
         let req = ConnectRequest {
+            ru_preset: None,
             connections: vec![],
             uri: "synthetic".into(),
             bypass: vec![],

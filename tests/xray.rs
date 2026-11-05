@@ -2,26 +2,22 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use eivro::{
     config::{ConnectRequest, Mode, generate},
     import::{EngineKind, parse_uri},
-    process::{self, Event, Session},
+    process,
     subscription::import_bytes,
     xray,
 };
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeSet,
-    fs,
-    io::{Read, Write},
-    net::{TcpListener, TcpStream},
-    process::{Child, Command, Stdio},
-    sync::Arc,
-    time::Duration,
+    io::Write,
+    process::{Command, Stdio},
 };
 
 fn fixture() -> Value {
     serde_json::from_str(include_str!("fixtures/mixed-xray.json")).unwrap()
 }
+#[cfg(target_os = "linux")]
 fn port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
+    std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
         .unwrap()
@@ -29,6 +25,7 @@ fn port() -> u16 {
 }
 fn request(uri: String, port: u16) -> ConnectRequest {
     ConnectRequest {
+        ru_preset: None,
         connections: vec![],
         probe_port: None,
         policies: vec![],
@@ -62,6 +59,7 @@ fn real_provider_shapes_preserve_transports_and_pass_both_cores() {
             );
         }
         let req = ConnectRequest {
+            ru_preset: None,
             connections: vec![],
             probe_port: None,
             policies: vec![],
@@ -75,7 +73,11 @@ fn real_provider_shapes_preserve_transports_and_pass_both_cores() {
             assert_eq!(config["outbounds"][0]["server"], "127.0.0.1");
             assert_eq!(config["log"]["disabled"], true);
             let mut child = Command::new(process::core_path().unwrap())
-                .args(["check", "-c", "/dev/stdin"])
+                .args([
+                    "check",
+                    "-c",
+                    if cfg!(windows) { "stdin" } else { "/dev/stdin" },
+                ])
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -138,6 +140,7 @@ fn tcp_reality_links_use_xray_and_preserve_authentication_and_transport() {
             assert_eq!(stream["realitySettings"]["show"], false);
             process::validate_profiles(&import_bytes(uri.as_bytes()).unwrap()).unwrap();
             let req = ConnectRequest {
+                ru_preset: None,
                 connections: vec![],
                 bridge_port: Some(2081),
                 ..request(uri.clone(), 2080)
@@ -281,110 +284,124 @@ fn native_json_rejects_paths_dialer_injection_insecure_tls_and_wrong_core_types(
     assert!(process::validate_profiles(&[p]).is_err());
 }
 
-struct Guard(Child);
-impl Drop for Guard {
-    fn drop(&mut self) {
-        process::terminate(&mut self.0);
-    }
-}
-
-fn running_xray_children() -> BTreeSet<u32> {
-    let mut result = BTreeSet::new();
-    for task in fs::read_dir("/proc/self/task").unwrap().flatten() {
-        let children = fs::read_to_string(task.path().join("children")).unwrap_or_default();
-        for pid in children
-            .split_whitespace()
-            .filter_map(|s| s.parse::<u32>().ok())
-        {
-            let Ok(cmd) = fs::read(format!("/proc/{pid}/cmdline")) else {
-                continue;
-            };
-            let args: Vec<_> = cmd.split(|b| *b == 0).filter(|b| !b.is_empty()).collect();
-            if args.len() == 4
-                && args[0].ends_with(b"/vendor/xray")
-                && args[1] == b"run"
-                && args[2] == b"-config"
-                && args[3] == b"stdin:"
-            {
-                result.insert(pid);
-            }
+#[cfg(target_os = "linux")]
+mod bridge {
+    use super::*;
+    use eivro::process::{Event, Session};
+    use std::{
+        collections::BTreeSet,
+        fs,
+        io::Read,
+        net::{TcpListener, TcpStream},
+        process::Child,
+        sync::Arc,
+        time::Duration,
+    };
+    struct Guard(Child);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            process::terminate(&mut self.0);
         }
     }
-    result
-}
 
-#[test]
-fn xray_bridge_transfers_traffic_and_core_exit_stops_the_session() {
-    let http = TcpListener::bind("127.0.0.1:0").unwrap();
-    let http_port = http.local_addr().unwrap().port();
-    let responder = std::thread::spawn(move || {
-        let (mut s, _) = http.accept().unwrap();
-        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        let mut request = [0; 1024];
-        assert!(s.read(&mut request).unwrap() > 0);
-        s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nxray!")
+    fn running_xray_children() -> BTreeSet<u32> {
+        let mut result = BTreeSet::new();
+        for task in fs::read_dir("/proc/self/task").unwrap().flatten() {
+            let children = fs::read_to_string(task.path().join("children")).unwrap_or_default();
+            for pid in children
+                .split_whitespace()
+                .filter_map(|s| s.parse::<u32>().ok())
+            {
+                let Ok(cmd) = fs::read(format!("/proc/{pid}/cmdline")) else {
+                    continue;
+                };
+                let args: Vec<_> = cmd.split(|b| *b == 0).filter(|b| !b.is_empty()).collect();
+                if args.len() == 4
+                    && args[0].ends_with(b"/vendor/xray")
+                    && args[1] == b"run"
+                    && args[2] == b"-config"
+                    && args[3] == b"stdin:"
+                {
+                    result.insert(pid);
+                }
+            }
+        }
+        result
+    }
+
+    #[test]
+    fn xray_bridge_transfers_traffic_and_core_exit_stops_the_session() {
+        let http = TcpListener::bind("127.0.0.1:0").unwrap();
+        let http_port = http.local_addr().unwrap().port();
+        let responder = std::thread::spawn(move || {
+            let (mut s, _) = http.accept().unwrap();
+            s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut request = [0; 1024];
+            assert!(s.read(&mut request).unwrap() > 0);
+            s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nxray!")
+                .unwrap();
+        });
+        let upstream_port = port();
+        let local_port = port();
+        let config = json!({"log":{"disabled":true},"inbounds":[{"type":"shadowsocks","listen":"127.0.0.1","listen_port":upstream_port,"method":"chacha20-ietf-poly1305","password":"synthetic"}],"outbounds":[{"type":"direct"}]});
+        let mut remote = Guard(
+            Command::new(process::core_path().unwrap())
+                .args(["run", "-c", "/dev/stdin"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        remote
+            .0
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(config.to_string().as_bytes())
             .unwrap();
-    });
-    let upstream_port = port();
-    let local_port = port();
-    let config = json!({"log":{"disabled":true},"inbounds":[{"type":"shadowsocks","listen":"127.0.0.1","listen_port":upstream_port,"method":"chacha20-ietf-poly1305","password":"synthetic"}],"outbounds":[{"type":"direct"}]});
-    let mut remote = Guard(
-        Command::new(process::core_path().unwrap())
-            .args(["run", "-c", "/dev/stdin"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap(),
-    );
-    remote
-        .0
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(config.to_string().as_bytes())
+        let v = json!({"protocol":"shadowsocks","settings":{"servers":[{"address":"127.0.0.1","port":upstream_port,"method":"chacha20-ietf-poly1305","password":"synthetic","uot":false,"UoTVersion":2}]},"streamSettings":{"network":"tcp","security":"none","tcpSettings":{}}});
+        let profile = xray::profile(&v).unwrap();
+        let before = running_xray_children();
+        let (session, rx) = Session::start(
+            request(profile.uri, local_port),
+            Mode::Local,
+            Arc::new(|| {}),
+        )
         .unwrap();
-    let v = json!({"protocol":"shadowsocks","settings":{"servers":[{"address":"127.0.0.1","port":upstream_port,"method":"chacha20-ietf-poly1305","password":"synthetic","uot":false,"UoTVersion":2}]},"streamSettings":{"network":"tcp","security":"none","tcpSettings":{}}});
-    let profile = xray::profile(&v).unwrap();
-    let before = running_xray_children();
-    let (session, rx) = Session::start(
-        request(profile.uri, local_port),
-        Mode::Local,
-        Arc::new(|| {}),
-    )
-    .unwrap();
-    let event = rx.recv_timeout(Duration::from_secs(8)).unwrap();
-    assert!(matches!(event, Event::Running), "{event:?}");
-    let mut sock = TcpStream::connect(("127.0.0.1", local_port)).unwrap();
-    sock.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    sock.write_all(&[5, 1, 0]).unwrap();
-    let mut auth = [0; 2];
-    sock.read_exact(&mut auth).unwrap();
-    assert_eq!(auth, [5, 0]);
-    let mut req = vec![5, 1, 0, 1, 127, 0, 0, 1];
-    req.extend(http_port.to_be_bytes());
-    sock.write_all(&req).unwrap();
-    let mut reply = [0; 10];
-    sock.read_exact(&mut reply).unwrap();
-    assert_eq!(reply[1], 0);
-    sock.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
-        .unwrap();
-    let mut body = String::new();
-    sock.read_to_string(&mut body).unwrap();
-    assert!(body.ends_with("xray!"));
-    responder.join().unwrap();
-    let owned: Vec<_> = running_xray_children()
-        .difference(&before)
-        .copied()
-        .collect();
-    assert_eq!(owned.len(), 1);
-    // Only a child of this test process, with the exact supervised command line.
-    assert_eq!(unsafe { libc::kill(owned[0] as i32, libc::SIGTERM) }, 0);
-    assert!(matches!(
-        rx.recv_timeout(Duration::from_secs(5)).unwrap(),
-        Event::Failed(_)
-    ));
-    drop(session);
-    assert!(TcpListener::bind(("127.0.0.1", local_port)).is_ok());
-    assert_eq!(running_xray_children(), before);
+        let event = rx.recv_timeout(Duration::from_secs(8)).unwrap();
+        assert!(matches!(event, Event::Running), "{event:?}");
+        let mut sock = TcpStream::connect(("127.0.0.1", local_port)).unwrap();
+        sock.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        sock.write_all(&[5, 1, 0]).unwrap();
+        let mut auth = [0; 2];
+        sock.read_exact(&mut auth).unwrap();
+        assert_eq!(auth, [5, 0]);
+        let mut req = vec![5, 1, 0, 1, 127, 0, 0, 1];
+        req.extend(http_port.to_be_bytes());
+        sock.write_all(&req).unwrap();
+        let mut reply = [0; 10];
+        sock.read_exact(&mut reply).unwrap();
+        assert_eq!(reply[1], 0);
+        sock.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .unwrap();
+        let mut body = String::new();
+        sock.read_to_string(&mut body).unwrap();
+        assert!(body.ends_with("xray!"));
+        responder.join().unwrap();
+        let owned: Vec<_> = running_xray_children()
+            .difference(&before)
+            .copied()
+            .collect();
+        assert_eq!(owned.len(), 1);
+        // Only a child of this test process, with the exact supervised command line.
+        assert_eq!(unsafe { libc::kill(owned[0] as i32, libc::SIGTERM) }, 0);
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Event::Failed(_)
+        ));
+        drop(session);
+        assert!(TcpListener::bind(("127.0.0.1", local_port)).is_ok());
+        assert_eq!(running_xray_children(), before);
+    }
 }

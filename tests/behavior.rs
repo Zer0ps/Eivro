@@ -1,3 +1,5 @@
+#![cfg(target_os = "linux")]
+
 use base64::{Engine, engine::general_purpose::STANDARD};
 use eivro::{
     config::{ConnectRequest, Mode, generate},
@@ -26,6 +28,7 @@ fn core() -> PathBuf {
 }
 fn request(uri: String) -> ConnectRequest {
     ConnectRequest {
+        ru_preset: None,
         connections: vec![],
         probe_port: None,
         policies: vec![],
@@ -216,7 +219,7 @@ fn settings_are_private_atomic_and_do_not_follow_symlinks() {
         0o700
     );
     let loaded = storage::load(&path).unwrap();
-    assert_eq!(loaded.schema, 4);
+    assert_eq!(loaded.schema, 5);
     fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
     assert!(storage::load(&path).is_err());
     fs::remove_file(&path).unwrap();
@@ -312,6 +315,7 @@ fn real_proxy_transport_routing_and_nologs() {
         STANDARD.encode("chacha20-ietf-poly1305:test-secret")
     );
     let req = ConnectRequest {
+        ru_preset: None,
         connections: vec![],
         probe_port: None,
         policies: vec![],
@@ -371,6 +375,7 @@ fn real_proxy_transport_routing_and_nologs() {
 fn supervisor_handles_cancel_and_occupied_port() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let req = ConnectRequest {
+        ru_preset: None,
         connections: vec![],
         probe_port: None,
         policies: vec![],
@@ -387,6 +392,7 @@ fn supervisor_handles_cancel_and_occupied_port() {
         eivro::process::Event::Failed(_)
     ));
     let req = ConnectRequest {
+        ru_preset: None,
         connections: vec![],
         probe_port: None,
         policies: vec![],

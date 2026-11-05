@@ -21,6 +21,7 @@ fn request() -> ConnectRequest {
         .unwrap()
         .port();
     ConnectRequest {
+        ru_preset: None,
         connections: vec![],
         uri: "ss://chacha20-ietf-poly1305:synthetic@127.0.0.1:1".into(),
         bypass: vec![],
@@ -66,6 +67,7 @@ fn one_helper_handles_reconnect_core_crash_and_gui_eof() {
         &mut client,
         CommandMessage::Stop {
             preserve_protection: false,
+            preserve_dns: false,
         },
     );
     assert_eq!(line(&mut reader), "STOPPED\n");
@@ -108,4 +110,44 @@ fn malformed_protocol_stops_the_owned_core() {
         .unwrap();
     assert!(worker.join().unwrap().is_err());
     assert!(TcpListener::bind(("127.0.0.1", port)).is_ok());
+}
+
+#[test]
+fn start_failure_details_are_bounded_single_line_and_do_not_break_next_request() {
+    for reason in [
+        "DNS state unavailable".to_owned(),
+        "line\nbreak".to_owned(),
+        "x".repeat(385),
+    ] {
+        let (mut client, server) = UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        let mut reader = BufReader::new(client.try_clone().unwrap());
+        let message = reason.clone();
+        let worker = std::thread::spawn(move || {
+            tun::serve(
+                server.try_clone().unwrap(),
+                server,
+                |_| Err(message.clone()),
+            )
+        });
+        send(&mut client, CommandMessage::Start { request: request() });
+        let reply = line(&mut reader);
+        if reason == "DNS state unavailable" {
+            assert_eq!(reply, "START_ERROR \"DNS state unavailable\"\n");
+        } else {
+            assert_eq!(reply, "START_ERROR\n");
+        }
+        send(
+            &mut client,
+            CommandMessage::Stop {
+                preserve_protection: false,
+                preserve_dns: false,
+            },
+        );
+        assert_eq!(line(&mut reader), "STOPPED\n");
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        assert!(worker.join().unwrap().is_ok());
+    }
 }

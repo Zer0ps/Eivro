@@ -1,0 +1,546 @@
+--- a/dns/transport/fakeip/store.go
++++ b/dns/transport/fakeip/store.go
+@@ -73,6 +73,9 @@
+ 		s.inet4Current = metadata.Inet4Current
+ 		s.inet6Current = metadata.Inet6Current
+ 	} else {
++		if metadata != nil {
++			return E.New("FakeIP state is invalid or its address ranges changed")
++		}
+ 		if s.inet4Range.IsValid() {
+ 			s.inet4Current = s.inet4Range.Addr().Next()
+ 		}
+@@ -124,7 +127,7 @@
+ 		}
+ 		nextAddress := s.inet4Current.Next()
+ 		if nextAddress == s.inet4Last || !s.inet4Range.Contains(nextAddress) {
+-			nextAddress = s.inet4Range.Addr().Next().Next()
++			return netip.Addr{}, E.New("IPv4 fakeip address range exhausted")
+ 		}
+ 		s.inet4Current = nextAddress
+ 		address = nextAddress
+@@ -134,21 +137,25 @@
+ 		}
+ 		nextAddress := s.inet6Current.Next()
+ 		if nextAddress == s.inet6Last || !s.inet6Range.Contains(nextAddress) {
+-			nextAddress = s.inet6Range.Addr().Next().Next()
++			return netip.Addr{}, E.New("IPv6 fakeip address range exhausted")
+ 		}
+ 		s.inet6Current = nextAddress
+ 		address = nextAddress
+ 	}
+-	err := s.storage.FakeIPStore(address, domain)
+-	if err != nil {
+-		s.logger.Warn("save FakeIP cache: ", err)
+-	}
+-	s.storage.FakeIPSaveMetadataAsync(&adapter.FakeIPMetadata{
++	// Reserve the address before publishing its mapping. A crash must never let
++	// a new domain acquire an address still cached by a client.
++	err := s.storage.FakeIPSaveMetadata(&adapter.FakeIPMetadata{
+ 		Inet4Range:   s.inet4Range,
+ 		Inet6Range:   s.inet6Range,
+ 		Inet4Current: s.inet4Current,
+ 		Inet6Current: s.inet6Current,
+ 	})
++	if err != nil {
++		return netip.Addr{}, err
++	}
++	if err := s.storage.FakeIPStore(address, domain); err != nil {
++		return netip.Addr{}, err
++	}
+ 	return address, nil
+ }
+ 
+--- a/experimental/cachefile/fakeip.go
++++ b/experimental/cachefile/fakeip.go
+@@ -23,29 +23,34 @@
+ 
+ func (c *CacheFile) FakeIPMetadata() *adapter.FakeIPMetadata {
+ 	var metadata adapter.FakeIPMetadata
+-	err := c.batch(func(tx *bbolt.Tx) error {
++	err := c.view(func(tx *bbolt.Tx) error {
+ 		bucket := tx.Bucket(bucketFakeIP)
+ 		if bucket == nil {
+ 			return os.ErrNotExist
+ 		}
+ 		metadataBinary := bucket.Get(keyMetadata)
+ 		if len(metadataBinary) == 0 {
++			if first, _ := bucket.Cursor().First(); first == nil {
++				return os.ErrNotExist
++			}
+ 			return os.ErrInvalid
+ 		}
+-		err := bucket.Delete(keyMetadata)
+-		if err != nil {
+-			return err
+-		}
++		// Keep the allocation cursor available if the process exits unexpectedly.
+ 		return metadata.UnmarshalBinary(metadataBinary)
+ 	})
+ 	if err != nil {
+-		return nil
++		if err == os.ErrNotExist {
++			return nil
++		}
++		// Invalid metadata must not look like a new, empty allocation table.
++		return &adapter.FakeIPMetadata{}
+ 	}
+ 	return &metadata
+ }
+ 
+ func (c *CacheFile) FakeIPSaveMetadata(metadata *adapter.FakeIPMetadata) error {
+-	return c.batch(func(tx *bbolt.Tx) error {
++	// Allocation is serialized by the FakeIP store; batching only delays DNS replies.
++	return c.update(func(tx *bbolt.Tx) error {
+ 		bucket, err := tx.CreateBucketIfNotExists(bucketFakeIP)
+ 		if err != nil {
+ 			return err
+@@ -77,7 +82,8 @@
+ }
+ 
+ func (c *CacheFile) FakeIPStore(address netip.Addr, domain string) error {
+-	return c.batch(func(tx *bbolt.Tx) error {
++	// Allocation is serialized by the FakeIP store; batching only delays DNS replies.
++	return c.update(func(tx *bbolt.Tx) error {
+ 		bucket, err := tx.CreateBucketIfNotExists(bucketFakeIP)
+ 		if err != nil {
+ 			return err
+--- /dev/null
++++ b/dns/transport/fakeip/eivro_test.go
+@@ -0,0 +1,108 @@
++package fakeip
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"net/netip"
++	"sync"
++	"testing"
++
++	"github.com/sagernet/sing-box/adapter"
++	"github.com/sagernet/sing/common/logger"
++)
++
++type checkedStorage struct {
++	*MemoryStorage
++	cursor                  *adapter.FakeIPMetadata
++	failCursor, failMapping bool
++}
++
++func (s *checkedStorage) FakeIPSaveMetadata(m *adapter.FakeIPMetadata) error {
++	if s.failCursor {
++		return errors.New("cursor unavailable")
++	}
++	copy := *m
++	s.cursor = &copy
++	return nil
++}
++func (s *checkedStorage) FakeIPStore(a netip.Addr, domain string) error {
++	if s.cursor == nil || (a.Is4() && s.cursor.Inet4Current != a) || (a.Is6() && s.cursor.Inet6Current != a) {
++		return errors.New("mapping published before cursor reservation")
++	}
++	if s.failMapping {
++		return errors.New("mapping unavailable")
++	}
++	return s.MemoryStorage.FakeIPStore(a, domain)
++}
++func testStore() (*Store, *checkedStorage) {
++	s := NewStore(context.Background(), logger.NOP(), netip.MustParsePrefix("198.18.0.0/29"), netip.MustParsePrefix("2001:2::/125"))
++	storage := &checkedStorage{MemoryStorage: NewMemoryStorage()}
++	s.storage = storage
++	s.inet4Current = s.inet4Range.Addr().Next()
++	s.inet6Current = s.inet6Range.Addr().Next()
++	return s, storage
++}
++func TestEivroFailedStateNeverReturnsAnUnrecordedAddress(t *testing.T) {
++	for _, cursorFailure := range []bool{true, false} {
++		t.Run(fmt.Sprint(cursorFailure), func(t *testing.T) {
++			s, storage := testStore()
++			storage.failCursor = cursorFailure
++			storage.failMapping = !cursorFailure
++			if a, err := s.Create("failed.test", false); err == nil || a.IsValid() {
++				t.Fatal("returned an unrecorded address", a, err)
++			}
++			if _, exists := storage.FakeIPLoadDomain("failed.test", false); exists {
++				t.Fatal("failed mapping became visible")
++			}
++			storage.failCursor, storage.failMapping = false, false
++			a, err := s.Create("next.test", false)
++			if err != nil {
++				t.Fatal(err)
++			}
++			if a != netip.MustParseAddr("198.18.0.3") {
++				t.Fatal("reserved address was reused", a)
++			}
++		})
++	}
++}
++func TestEivroExhaustionPreservesBothFamilies(t *testing.T) {
++	for _, ipv6 := range []bool{false, true} {
++		t.Run(fmt.Sprint(ipv6), func(t *testing.T) {
++			s, _ := testStore()
++			var first netip.Addr
++			for i := 0; i < 5; i++ {
++				a, err := s.Create(fmt.Sprintf("name-%d.test", i), ipv6)
++				if err != nil {
++					t.Fatal(err)
++				}
++				if i == 0 {
++					first = a
++				}
++			}
++			if a, err := s.Create("exhausted.test", ipv6); err == nil || a.IsValid() {
++				t.Fatal("exhaustion reused an address", a, err)
++			}
++			if domain, ok := s.Lookup(first); !ok || domain != "name-0.test" {
++				t.Fatal("old address changed identity", domain)
++			}
++		})
++	}
++}
++func TestEivroConcurrentSameDomainKeepsOneIdentity(t *testing.T) {
++	s, _ := testStore()
++	var group sync.WaitGroup
++	for range 32 {
++		group.Go(func() {
++			a, err := s.Create("same.test", false)
++			if err != nil || a != netip.MustParseAddr("198.18.0.2") {
++				t.Errorf("inconsistent identity: %v %v", a, err)
++			}
++		})
++	}
++	group.Wait()
++	a, err := s.Create("next.test", false)
++	if err != nil || a != netip.MustParseAddr("198.18.0.3") {
++		t.Fatal("duplicate allocation", a, err)
++	}
++}
+--- /dev/null
++++ b/experimental/cachefile/eivro_test.go
+@@ -0,0 +1,42 @@
++package cachefile
++
++import (
++	"context"
++	"net/netip"
++	"path/filepath"
++	"testing"
++
++	"github.com/sagernet/bbolt"
++	"github.com/sagernet/sing-box/adapter"
++	"github.com/sagernet/sing-box/option"
++	"github.com/sagernet/sing/common/logger"
++)
++
++func TestEivroCursorReadIsNonDestructiveAndMissingCursorIsNotEmptyState(t *testing.T) {
++	c := New(context.Background(), logger.NOP(), option.CacheFileOptions{Path: filepath.Join(t.TempDir(), "cache.db"), StoreFakeIP: true})
++	if err := c.start(); err != nil {
++		t.Fatal(err)
++	}
++	defer c.database().Close()
++	if c.FakeIPMetadata() != nil {
++		t.Fatal("fresh store has metadata")
++	}
++	expected := &adapter.FakeIPMetadata{Inet4Range: netip.MustParsePrefix("198.18.0.0/15"), Inet4Current: netip.MustParseAddr("198.18.0.2")}
++	if err := c.FakeIPSaveMetadata(expected); err != nil {
++		t.Fatal(err)
++	}
++	if err := c.FakeIPStore(expected.Inet4Current, "synthetic.test"); err != nil {
++		t.Fatal(err)
++	}
++	for range 2 {
++		if m := c.FakeIPMetadata(); m == nil || *m != *expected {
++			t.Fatal("cursor was consumed or changed", m)
++		}
++	}
++	if err := c.update(func(tx *bbolt.Tx) error { return tx.Bucket(bucketFakeIP).Delete(keyMetadata) }); err != nil {
++		t.Fatal(err)
++	}
++	if m := c.FakeIPMetadata(); m == nil || m.Inet4Range.IsValid() {
++		t.Fatal("lost cursor appeared as fresh state", m)
++	}
++}
+--- /dev/null
++++ b/experimental/cachefile/eivro_retire.go
+@@ -0,0 +1,141 @@
++package cachefile
++
++import (
++	"bytes"
++	"encoding/binary"
++	"errors"
++	"net/netip"
++	"os"
++	"time"
++
++	"github.com/sagernet/bbolt"
++	"github.com/sagernet/sing-box/adapter"
++)
++
++// RetireFakeIP writes a fresh database containing allocation metadata only.
++// The caller owns publication/rollback and must stop the network core first.
++// Deleting buckets in place would leave old domain strings in free DB pages.
++func RetireFakeIP(sourcePath, targetPath string) error {
++	sourceInfo, err := os.Stat(sourcePath)
++	if err != nil {
++		return err
++	}
++	targetInfo, err := os.Stat(targetPath)
++	if err != nil {
++		return err
++	}
++	if !sourceInfo.Mode().IsRegular() || !targetInfo.Mode().IsRegular() || os.SameFile(sourceInfo, targetInfo) || targetInfo.Size() != 0 || sourceInfo.Size() > 32*1024*1024 {
++		return errors.New("invalid FakeIP retirement files")
++	}
++	source, err := bbolt.Open(sourcePath, 0o600, &bbolt.Options{ReadOnly: true, Timeout: time.Second})
++	if err != nil {
++		return err
++	}
++	defer source.Close()
++	var metadataBytes []byte
++	err = source.View(func(tx *bbolt.Tx) error {
++		bucket := tx.Bucket(bucketFakeIP)
++		if bucket != nil {
++			metadataBytes = bytes.Clone(bucket.Get(keyMetadata))
++		}
++		if len(metadataBytes) == 0 {
++			for _, key := range [][]byte{bucketFakeIP, bucketFakeIPDomain4, bucketFakeIPDomain6} {
++				if b := tx.Bucket(key); b != nil {
++					if k, _ := b.Cursor().First(); k != nil {
++						return errors.New("FakeIP cursor missing from nonempty state")
++					}
++				}
++			}
++			return nil // A core that died before issuing any address.
++		}
++		// The upstream decoder panics on truncated length fields. Validate the
++		// framing before decoding, and reject unexpected trailing data.
++		if len(metadataBytes) > 128 {
++			return errors.New("invalid FakeIP cursor size")
++		}
++		remaining := metadataBytes
++		for range 4 {
++			if len(remaining) < 2 {
++				return errors.New("truncated FakeIP cursor")
++			}
++			size := int(binary.BigEndian.Uint16(remaining))
++			remaining = remaining[2:]
++			if size > 17 || len(remaining) < size {
++				return errors.New("invalid FakeIP cursor element")
++			}
++			remaining = remaining[size:]
++		}
++		if len(remaining) != 0 {
++			return errors.New("invalid FakeIP cursor framing")
++		}
++		var metadata adapter.FakeIPMetadata
++		if err := metadata.UnmarshalBinary(metadataBytes); err != nil {
++			return err
++		}
++		for _, pair := range []struct {
++			prefix netip.Prefix
++			cursor netip.Addr
++		}{
++			{metadata.Inet4Range, metadata.Inet4Current}, {metadata.Inet6Range, metadata.Inet6Current},
++		} {
++			if pair.prefix.IsValid() != pair.cursor.IsValid() || (pair.prefix.IsValid() && !pair.prefix.Contains(pair.cursor)) {
++				return errors.New("invalid FakeIP cursor range")
++			}
++		}
++		if !metadata.Inet4Range.IsValid() && !metadata.Inet6Range.IsValid() {
++			return errors.New("missing FakeIP address ranges")
++		}
++		check := func(raw []byte) error {
++			address, ok := netip.AddrFromSlice(raw)
++			prefix, cursor := metadata.Inet6Range, metadata.Inet6Current
++			if address.Is4() {
++				prefix, cursor = metadata.Inet4Range, metadata.Inet4Current
++			}
++			if !ok || !prefix.Contains(address) || cursor.Compare(address) < 0 {
++				return errors.New("FakeIP cursor does not cover retained addresses")
++			}
++			return nil
++		}
++		if err := bucket.ForEach(func(key, value []byte) error {
++			if bytes.Equal(key, keyMetadata) {
++				return nil
++			}
++			if value == nil {
++				return errors.New("unexpected FakeIP bucket")
++			}
++			return check(key)
++		}); err != nil {
++			return err
++		}
++		for _, key := range [][]byte{bucketFakeIPDomain4, bucketFakeIPDomain6} {
++			if b := tx.Bucket(key); b != nil {
++				if err := b.ForEach(func(_, value []byte) error { return check(value) }); err != nil {
++					return err
++				}
++			}
++		}
++		return nil
++	})
++	if err != nil {
++		return err
++	}
++	target, err := bbolt.Open(targetPath, 0o600, &bbolt.Options{Timeout: time.Second})
++	if err != nil {
++		return err
++	}
++	err = target.Update(func(tx *bbolt.Tx) error {
++		if len(metadataBytes) == 0 {
++			return nil
++		}
++		bucket, err := tx.CreateBucket(bucketFakeIP)
++		if err != nil {
++			return err
++		}
++		return bucket.Put(keyMetadata, metadataBytes)
++	})
++	closed := target.Close()
++	if err != nil {
++		return err
++	}
++	return closed
++}
+--- /dev/null
++++ b/experimental/cachefile/eivro_retire_test.go
+@@ -0,0 +1,103 @@
++package cachefile
++
++import (
++	"bytes"
++	"context"
++	"net/netip"
++	"os"
++	"path/filepath"
++	"testing"
++
++	"github.com/sagernet/bbolt"
++	"github.com/sagernet/sing-box/adapter"
++	"github.com/sagernet/sing-box/option"
++	"github.com/sagernet/sing/common/logger"
++)
++
++func TestEivroRetirementCopiesOnlyCursorIntoFreshPages(t *testing.T) {
++	dir := t.TempDir()
++	source, target := filepath.Join(dir, "old.db"), filepath.Join(dir, "new.db")
++	c := New(context.Background(), logger.NOP(), option.CacheFileOptions{Path: source, StoreFakeIP: true})
++	if err := c.start(); err != nil {
++		t.Fatal(err)
++	}
++	metadata := &adapter.FakeIPMetadata{Inet4Range: netip.MustParsePrefix("198.18.0.0/15"), Inet4Current: netip.MustParseAddr("198.18.0.20"), Inet6Range: netip.MustParsePrefix("2001:2::/111"), Inet6Current: netip.MustParseAddr("2001:2::20")}
++	if err := c.FakeIPSaveMetadata(metadata); err != nil {
++		t.Fatal(err)
++	}
++	for _, address := range []string{"198.18.0.15", "2001:2::15"} {
++		if err := c.FakeIPStore(netip.MustParseAddr(address), "private-retirement-fixture.test"); err != nil {
++			t.Fatal(err)
++		}
++	}
++	if err := c.database().Close(); err != nil {
++		t.Fatal(err)
++	}
++	before, _ := os.ReadFile(source)
++	if err := os.WriteFile(target, nil, 0o600); err != nil {
++		t.Fatal(err)
++	}
++	if err := RetireFakeIP(source, target); err != nil {
++		t.Fatal(err)
++	}
++	after, _ := os.ReadFile(source)
++	fresh, _ := os.ReadFile(target)
++	if !bytes.Equal(before, after) || !bytes.Contains(before, []byte("private-retirement-fixture.test")) || bytes.Contains(fresh, []byte("private-retirement-fixture.test")) {
++		t.Fatal("retirement changed the source or copied domain records")
++	}
++	next := New(context.Background(), logger.NOP(), option.CacheFileOptions{Path: target, StoreFakeIP: true})
++	if err := next.start(); err != nil {
++		t.Fatal(err)
++	}
++	defer next.database().Close()
++	if got := next.FakeIPMetadata(); got == nil || *got != *metadata {
++		t.Fatal("allocation cursor changed", got)
++	}
++	if _, ok := next.FakeIPLoad(netip.MustParseAddr("198.18.0.15")); ok {
++		t.Fatal("retired address still resolves")
++	}
++}
++
++func TestEivroRetirementRejectsLostTruncatedAndRewoundCursor(t *testing.T) {
++	for _, mode := range []string{"missing", "truncated", "rewound"} {
++		t.Run(mode, func(t *testing.T) {
++			dir := t.TempDir()
++			source, target := filepath.Join(dir, "old.db"), filepath.Join(dir, "new.db")
++			db, err := bbolt.Open(source, 0o600, nil)
++			if err != nil {
++				t.Fatal(err)
++			}
++			err = db.Update(func(tx *bbolt.Tx) error {
++				b, err := tx.CreateBucket(bucketFakeIP)
++				if err != nil {
++					return err
++				}
++				if err = b.Put(netip.MustParseAddr("198.18.0.10").AsSlice(), []byte("fixture.test")); err != nil {
++					return err
++				}
++				if mode == "missing" {
++					return nil
++				}
++				data := []byte{0}
++				if mode == "rewound" {
++					data, err = (&adapter.FakeIPMetadata{Inet4Range: netip.MustParsePrefix("198.18.0.0/15"), Inet4Current: netip.MustParseAddr("198.18.0.2")}).MarshalBinary()
++					if err != nil {
++						return err
++					}
++				}
++				return b.Put(keyMetadata, data)
++			})
++			if err != nil {
++				t.Fatal(err)
++			}
++			db.Close()
++			os.WriteFile(target, nil, 0o600)
++			if err := RetireFakeIP(source, target); err == nil {
++				t.Fatal("unsafe cursor accepted")
++			}
++			if info, _ := os.Stat(target); info.Size() != 0 {
++				t.Fatal("target modified before validating source")
++			}
++		})
++	}
++}
+--- /dev/null
++++ b/cmd/sing-box/cmd_eivro_retire_linux.go
+@@ -0,0 +1,30 @@
++package main
++
++import (
++	"errors"
++	"fmt"
++	"strconv"
++
++	"github.com/sagernet/sing-box/experimental/cachefile"
++	"github.com/spf13/cobra"
++)
++
++func init() {
++	mainCommand.AddCommand(&cobra.Command{
++		Use:    "eivro-retire-fakeip SOURCE_FD TARGET_FD",
++		Hidden: true, SilenceUsage: true, SilenceErrors: true,
++		Args:             cobra.ExactArgs(2),
++		PersistentPreRun: func(*cobra.Command, []string) {},
++		RunE: func(_ *cobra.Command, args []string) error {
++			var paths [2]string
++			for i, arg := range args {
++				fd, err := strconv.Atoi(arg)
++				if err != nil || fd < 3 {
++					return errors.New("invalid inherited state descriptor")
++				}
++				paths[i] = fmt.Sprintf("/proc/self/fd/%d", fd)
++			}
++			return cachefile.RetireFakeIP(paths[0], paths[1])
++		},
++	})
++}

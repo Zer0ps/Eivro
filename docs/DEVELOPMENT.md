@@ -23,7 +23,7 @@ python3 scripts/fetch-appimage-tools.py  # только для AppImage x86_64
 Для запуска собранного приложения выполните `./start.sh`. Пакеты и архивы
 появятся в `dist/`.
 
-Требования сборки: Rust, C/C++ toolchain, pkg-config, Python 3.11+, GNU binutils;
+Требования сборки: Rust, C/C++ toolchain, pkg-config, Python 3.12+, GNU binutils, patch;
 `rpm-build` для RPM. Dev-пакеты GTK/WebKit не нужны. Для проверки GUI и сетевых сценариев нужны также библиотеки графического стека,
 D-Bus, схемы GNOME, iproute2, nftables, OpenSSL и curl. Список пакетов для Ubuntu
 приведён в `.github/workflows/release.yml`.
@@ -31,6 +31,9 @@ D-Bus, схемы GNOME, iproute2, nftables, OpenSSL и curl. Список па�
 Нативную arm64-сборку можно выполнить на Linux arm64 без x86_64 Zig tools;
 она здесь не проверена. Без Zig tools build.sh использует системный ABI,
 поэтому такая сборка может требовать более свежую glibc.
+Linux sing-box собирается из закреплённых исходников с патчем FakeIP;
+скрипт скачивает проверенный Go SDK в `.tools/`, не устанавливая его в систему.
+Сведения о патче и проверках — в [DNS-ROUTING.md](DNS-ROUTING.md).
 
 Для теста TCP/Reality нужны Python 3 и команда `openssl`: временный TLS-сервер
 и синтетические ключи создаются только на IPv4 loopback и удаляются после теста.

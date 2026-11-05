@@ -9,8 +9,8 @@ use serde_json::json;
 fn schema_two_migrates_rules_without_changing_subscriptions_or_preferences() {
     let mut settings:Settings=serde_json::from_value(json!({"schema":2,"bypass":["*.example.test","10.0.0.0/8"],"theme":"light","mode":"tun","accent":[1,2,3]})).unwrap();
     settings.migrate().unwrap();
-    assert_eq!(settings.schema, 4);
-    assert_eq!(settings.routing_profiles.len(), 1);
+    assert_eq!(settings.schema, 5);
+    assert_eq!(settings.routing_profiles.len(), 3);
     assert_eq!(settings.routing_profiles[0].rules.len(), 2);
     assert_eq!(settings.accent, [1, 2, 3]);
     assert!(settings.reconnect && settings.close_to_tray);
@@ -59,16 +59,22 @@ fn bulk_add_is_atomic_deduplicated_and_ordered() {
 
 #[test]
 fn routing_priorities_applications_and_guard_config_are_accepted_by_core() {
+    let application = if cfg!(windows) {
+        r"C:\Program Files\Mozilla Firefox\firefox.exe"
+    } else {
+        "/usr/bin/firefox"
+    };
     let mut p = RoutingProfile::default();
     p.add_addresses("private.example.test", Action::Proxy)
         .unwrap();
     p.add_addresses("*.example.test", Action::Direct).unwrap();
     p.rules.push(PolicyRule {
         enabled: true,
-        target: Target::application("/usr/bin/firefox").unwrap(),
+        target: Target::application(application).unwrap(),
         action: Action::Direct,
     });
     let request = ConnectRequest {
+        ru_preset: None,
         connections: vec![],
         uri: "ss://chacha20-ietf-poly1305:synthetic@127.0.0.1:443".into(),
         bypass: vec![],
@@ -84,9 +90,15 @@ fn routing_priorities_applications_and_guard_config_are_accepted_by_core() {
         config["route"]["rules"][3]["domain"],
         json!(["private.example.test"])
     );
+    #[cfg(unix)]
     assert_eq!(
         config["route"]["rules"][5]["process_path"],
-        json!(["/usr/bin/firefox"])
+        json!([application])
+    );
+    #[cfg(windows)]
+    assert_eq!(
+        config["route"]["rules"][5]["process_path_regex"],
+        json!([r"(?i)^C:\\Program Files\\Mozilla Firefox\\firefox\.exe$"])
     );
     #[cfg(target_os = "linux")]
     {
@@ -107,8 +119,12 @@ fn routing_priorities_applications_and_guard_config_are_accepted_by_core() {
         io::Write,
         process::{Command, Stdio},
     };
-    let mut child = Command::new("vendor/sing-box")
-        .args(["check", "-c", "/dev/stdin"])
+    let mut child = Command::new(eivro::process::core_path().unwrap())
+        .args([
+            "check",
+            "-c",
+            if cfg!(windows) { "stdin" } else { "/dev/stdin" },
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

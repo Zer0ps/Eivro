@@ -29,6 +29,23 @@ pub(super) struct Editor {
     network_edit: Option<NetworkDraft>,
     delete_profile: bool,
     reveal_rule: Option<usize>,
+    preset_browser: Option<PresetBrowser>,
+}
+struct PresetBrowser {
+    filter: String,
+    entries: Vec<&'static eivro::presets::Entry>,
+    visible: Vec<usize>,
+}
+impl PresetBrowser {
+    fn new(set: eivro::presets::RuSet) -> Self {
+        let entries: Vec<_> = set.entries().collect();
+        let visible = (0..entries.len()).collect();
+        Self {
+            filter: String::new(),
+            entries,
+            visible,
+        }
+    }
 }
 struct NetworkDraft {
     id: Option<u64>,
@@ -285,7 +302,10 @@ fn rule_row(
 
 impl Editor {
     pub(super) fn modal_open(&self) -> bool {
-        self.add || self.network_edit.is_some() || self.delete_profile
+        self.add
+            || self.network_edit.is_some()
+            || self.delete_profile
+            || self.preset_browser.is_some()
     }
     pub fn new(s: &Settings) -> Self {
         Self {
@@ -305,12 +325,29 @@ impl Editor {
             network_edit: None,
             delete_profile: false,
             reveal_rule: None,
+            preset_browser: None,
         }
     }
     #[cfg(feature = "qa")]
     pub fn open_add(&mut self, application: bool) {
         self.add = true;
         self.application = application;
+    }
+    #[cfg(feature = "qa")]
+    pub fn preview_preset(&mut self, full: bool, browse: bool) {
+        let set = if full {
+            eivro::presets::RuSet::AllNetworks
+        } else {
+            eivro::presets::RuSet::Services
+        };
+        self.selected = self
+            .profiles
+            .iter()
+            .position(|p| p.ru_preset.as_ref().is_some_and(|p| p.set == set))
+            .unwrap();
+        if browse {
+            self.preset_browser = Some(PresetBrowser::new(set));
+        }
     }
     #[cfg(feature = "qa")]
     pub fn preview_selection(&mut self) {
@@ -468,6 +505,7 @@ impl Editor {
         self.add_dialog(&ctx, p);
         self.network_dialog(&ctx, p, links);
         self.delete_profile_dialog(&ctx, p);
+        self.preset_dialog(&ctx, p);
         if apply {
             let edit = Edit {
                 profiles: self.profiles.clone(),
@@ -529,7 +567,14 @@ impl Editor {
                         } else {
                             vec![]
                         };
-                        self.profiles.push(RoutingProfile { name, rules });
+                        let ru_preset = copy
+                            .then(|| self.profiles[self.selected].ru_preset.clone())
+                            .flatten();
+                        self.profiles.push(RoutingProfile {
+                            name,
+                            rules,
+                            ru_preset,
+                        });
                         self.selected = self.profiles.len() - 1;
                         self.rows.clear();
                         ui.close();
@@ -545,17 +590,93 @@ impl Editor {
                     self.delete_profile = true;
                     ui.close();
                 }
+                ui.separator();
+                ui.label("Готовые профили");
+                for set in eivro::presets::RuSet::ALL {
+                    if ui
+                        .add_enabled(self.profiles.len() < 24, egui::Button::new(set.name()))
+                        .clicked()
+                    {
+                        let mut profile = RoutingProfile::ru(set);
+                        let mut n = 2;
+                        while self
+                            .profiles
+                            .iter()
+                            .any(|p| p.name.trim().to_lowercase() == profile.name.to_lowercase())
+                        {
+                            profile.name = format!("{} ({n})", set.name());
+                            n += 1;
+                        }
+                        self.profiles.push(profile);
+                        self.selected = self.profiles.len() - 1;
+                        self.rows.clear();
+                        self.filter.clear();
+                        ui.close();
+                    }
+                }
             });
         });
-        ui.add_space(8.0);
-        ui.add(
-            egui::TextEdit::singleline(&mut self.filter)
-                .hint_text("Найти правило…")
-                .desired_width(f32::INFINITY)
-                .margin(Vec2::new(12.0, 9.0))
-                .char_limit(255),
-        );
-        ui.add_space(10.0);
+        let has_preset = self.profiles[self.selected].ru_preset.is_some();
+        if let Some(preset) = &mut self.profiles[self.selected].ru_preset {
+            ui.add_space(12.0);
+            egui::Frame::new()
+                .fill(p.soft)
+                .corner_radius(10)
+                .inner_margin(12)
+                .show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.vertical(|ui| {
+                            ui.label(heading(
+                                match preset.set {
+                                    eivro::presets::RuSet::Services => "Российские сервисы",
+                                    eivro::presets::RuSet::AllNetworks => {
+                                        "Российские сервисы и IP-сети"
+                                    }
+                                },
+                                16.0,
+                            ));
+                            ui.label(
+                                RichText::new(
+                                    "Встроенный список · свои правила ниже имеют приоритет",
+                                )
+                                .size(11.0)
+                                .color(p.muted),
+                            );
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            super::design::toggle(
+                                ui,
+                                "Встроенный список включён",
+                                &mut preset.enabled,
+                                p,
+                            );
+                            if command(
+                                ui,
+                                "Состав…",
+                                ButtonTone::Secondary,
+                                Vec2::new(88.0, 36.0),
+                                p,
+                            )
+                            .clicked()
+                            {
+                                self.preset_browser = Some(PresetBrowser::new(preset.set));
+                            }
+                        });
+                    });
+                });
+        }
+        let show_rule_tools = !has_preset || !self.profiles[self.selected].rules.is_empty();
+        if show_rule_tools {
+            ui.add_space(8.0);
+            ui.add(
+                egui::TextEdit::singleline(&mut self.filter)
+                    .hint_text("Найти правило…")
+                    .desired_width(f32::INFINITY)
+                    .margin(Vec2::new(12.0, 9.0))
+                    .char_limit(255),
+            );
+            ui.add_space(10.0);
+        }
         let filter = self.filter.to_lowercase();
         let visible: Vec<_> = self.profiles[self.selected]
             .rules
@@ -571,33 +692,35 @@ impl Editor {
         {
             self.rows.clear();
         }
-        ui.horizontal(|ui| {
-            let all = !visible.is_empty() && visible.iter().all(|i| self.rows.contains(i));
-            if enabled_command(
-                ui,
-                !visible.is_empty(),
-                if all {
-                    "Снять выбор"
-                } else {
-                    "Выбрать все"
-                },
-                ButtonTone::Quiet,
-                Vec2::ZERO,
-                p,
-            )
-            .clicked()
-            {
-                if all {
-                    self.rows.clear();
-                } else {
-                    self.rows.extend(visible.iter().copied());
+        if show_rule_tools {
+            ui.horizontal(|ui| {
+                let all = !visible.is_empty() && visible.iter().all(|i| self.rows.contains(i));
+                if enabled_command(
+                    ui,
+                    !visible.is_empty(),
+                    if all {
+                        "Снять выбор"
+                    } else {
+                        "Выбрать все"
+                    },
+                    ButtonTone::Quiet,
+                    Vec2::ZERO,
+                    p,
+                )
+                .clicked()
+                {
+                    if all {
+                        self.rows.clear();
+                    } else {
+                        self.rows.extend(visible.iter().copied());
+                    }
                 }
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_space(64.0);
-                ui.label(RichText::new("Направление").size(11.0).color(p.muted));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(64.0);
+                    ui.label(RichText::new("Направление").size(11.0).color(p.muted));
+                });
             });
-        });
+        }
         let selection_progress = ui.ctx().animate_bool_with_time(
             ui.id().with("rule-selection-toolbar"),
             !self.rows.is_empty(),
@@ -606,14 +729,16 @@ impl Editor {
         egui::ScrollArea::vertical()
             .id_salt("routing-rows")
             .scroll_source(RULE_SCROLL)
-            .max_height((height - 180.0 - 55.0 * selection_progress).max(60.0))
+            .max_height((height - 180.0 - if has_preset { 84.0 } else { 0.0 } - 55.0 * selection_progress).max(60.0))
             .min_scrolled_height(80.0)
             .auto_shrink([false, true])
             .show(ui, |ui| {
                 if visible.is_empty() {
                     ui.add_space(24.0);
                     ui.label(heading(
-                        if filter.is_empty() {
+                        if filter.is_empty() && has_preset {
+                            "Ваши исключения"
+                        } else if filter.is_empty() {
                             "Всё через Eivro"
                         } else {
                             "Ничего не найдено"
@@ -621,7 +746,9 @@ impl Editor {
                         20.0,
                     ));
                     ui.label(
-                        RichText::new(if filter.is_empty() {
+                        RichText::new(if filter.is_empty() && has_preset {
+                            "Добавьте правило, чтобы изменить маршрут отдельного сайта или приложения."
+                        } else if filter.is_empty() {
                             "Добавьте исключение для сайта или приложения."
                         } else {
                             "Измените поисковый запрос."
@@ -661,9 +788,13 @@ impl Editor {
         ui.add_space(8.0);
         if self.rows.is_empty() {
             ui.label(
-                RichText::new("Первое совпадение сверху. Остальное — через Eivro.")
-                    .small()
-                    .color(p.muted),
+                RichText::new(if has_preset {
+                    "Не совпало с правилами и списком — через Eivro."
+                } else {
+                    "Первое совпадение сверху. Остальное — через Eivro."
+                })
+                .small()
+                .color(p.muted),
             );
         } else {
             ui.scope(|ui| {
@@ -733,6 +864,70 @@ impl Editor {
                     }
                 });
             });
+        }
+    }
+    fn preset_dialog(&mut self, ctx: &egui::Context, p: Palette) {
+        let Some(browser) = &mut self.preset_browser else {
+            return;
+        };
+        let Some(preset) = &mut self.profiles[self.selected].ru_preset else {
+            self.preset_browser = None;
+            return;
+        };
+        let mut close = false;
+        let response = super::design::modal(ctx, "ru-preset-list").show(ctx, |ui| {
+            ui.set_width((ctx.content_rect().width() - 64.0).clamp(260.0, 660.0));
+            ui.label(heading("Состав профиля", 23.0));
+            ui.label(RichText::new(preset.set.name()).color(p.muted));
+            ui.add_space(12.0);
+            if ui.add(egui::TextEdit::singleline(&mut browser.filter).hint_text("Найти домен или подсеть…").char_limit(253).desired_width(f32::INFINITY).margin(Vec2::new(12.0,9.0))).changed() {
+                let filter = browser.filter.trim().to_lowercase();
+                browser.visible = browser.entries.iter().enumerate().filter(|(_,e)| e.value.contains(&filter)).map(|(i,_)| i).collect();
+            }
+            ui.add_space(8.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(format!("Найдено: {}",browser.visible.len())).small().color(p.muted));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if enabled_command(ui,!preset.disabled.is_empty(),"Восстановить список",ButtonTone::Quiet,Vec2::ZERO,p).clicked() { preset.disabled.clear(); }
+                });
+            });
+            ui.add_space(4.0);
+            // Virtual rows: the full tier must not paint ten thousand controls per frame.
+            egui::ScrollArea::vertical().id_salt("ru-preset-entries").scroll_source(RULE_SCROLL)
+                .max_height((ctx.content_rect().height()-300.0).clamp(100.0,430.0))
+                .min_scrolled_height((ctx.content_rect().height()-300.0).clamp(100.0,430.0))
+                .auto_shrink([false,false])
+                .show_rows(ui,44.0,browser.visible.len(),|ui,range| {
+                    for index in range {
+                        let entry = browser.entries[browser.visible[index]];
+                        let mut on = !preset.disabled.contains(entry.value);
+                        let response = ui.push_id(entry.value, |ui| {
+                            ui.horizontal(|ui| {
+                                let width=(ui.available_width()-64.0).max(1.0);
+                                ui.allocate_ui_with_layout(Vec2::new(width,44.0),egui::Layout::top_down(egui::Align::Min),|ui| {
+                                    ui.set_min_size(Vec2::new(width,44.0));
+                                    ui.add(egui::Label::new(RichText::new(entry.value).color(if on {p.text}else{p.muted})).truncate());
+                                    if entry.network.is_none() { ui.label(RichText::new("Домен и поддомены").size(10.0).color(p.muted)); }
+                                });
+                                super::design::toggle(ui,"Использовать запись",&mut on,p)
+                            }).inner
+                        }).inner;
+                        if response.clicked() {
+                            if on { preset.disabled.remove(entry.value); } else { preset.disabled.insert(entry.value.into()); }
+                        }
+                    }
+                });
+            ui.add_space(12.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("Источник: ru-direct · 03.11.2026").small().color(p.muted))
+                    .on_hover_text("Отключённые записи исключаются из набора. Свои правила профиля остаются приоритетнее. Данные обновляются вместе с приложением.");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui| {
+                    close = command(ui,"Готово",ButtonTone::Primary,Vec2::new(100.0,40.0),p).clicked();
+                });
+            });
+        });
+        if close || response.should_close() {
+            self.preset_browser = None;
         }
     }
     fn networks(
@@ -979,7 +1174,11 @@ impl Editor {
                             });
                         ui.add(
                             egui::TextEdit::singleline(&mut self.input)
-                                .hint_text("/usr/bin/firefox")
+                                .hint_text(if cfg!(windows) {
+                                    r"C:\Program Files\Mozilla Firefox\firefox.exe"
+                                } else {
+                                    "/usr/bin/firefox"
+                                })
                                 .desired_width(f32::INFINITY)
                                 .margin(Vec2::new(12.0, 10.0))
                                 .char_limit(4096),
@@ -1125,7 +1324,11 @@ impl Editor {
                         ui.horizontal(|ui| {
                             ui.add(
                                 egui::TextEdit::singleline(&mut draft.interface)
-                                    .hint_text("tun0 или wg0")
+                                    .hint_text(if cfg!(windows) {
+                                        "Ethernet или имя рабочего VPN"
+                                    } else {
+                                        "tun0 или wg0"
+                                    })
                                     .char_limit(15)
                                     .desired_width(ui.available_width() - 115.0)
                                     .margin(Vec2::new(12.0, 10.0)),
@@ -1432,6 +1635,11 @@ fn applications() -> Vec<(String, String)> {
 #[cfg(target_os = "macos")]
 fn applications() -> Vec<(String, String)> {
     eivro::platform::macos::native::applications()
+}
+
+#[cfg(windows)]
+fn applications() -> Vec<(String, String)> {
+    eivro::platform::windows::native::applications()
 }
 
 #[cfg(test)]

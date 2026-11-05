@@ -1,10 +1,19 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
 mod emoji;
 #[cfg_attr(target_os = "macos", path = "platform/macos/instance.rs")]
+#[cfg_attr(windows, path = "platform/windows/instance.rs")]
 mod instance;
 mod ui;
 
 fn main() -> eframe::Result {
     let args: Vec<_> = std::env::args().collect();
+    #[cfg(windows)]
+    if args.len() == 3 && args[1] == "--stop-core" {
+        let ok = args[2]
+            .parse()
+            .is_ok_and(eivro::platform::windows::core_child::signal_worker);
+        std::process::exit(if ok { 0 } else { 1 });
+    }
     if args.len() == 2 && args[1] == "--version" {
         println!("Eivro {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
@@ -80,9 +89,12 @@ fn main() -> eframe::Result {
     // XWayland provides both operations needed by a persistent tray client.
     #[cfg(target_os = "linux")]
     let window_hiding = std::env::var_os("DISPLAY").is_some_and(|s| !s.is_empty());
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     let window_hiding = true;
+    #[cfg(unix)]
     let initial_size = [960.0, 760.0];
+    #[cfg(all(windows, feature = "qa"))]
+    let initial_size = [960.0, 700.0];
     #[cfg(feature = "qa")]
     let initial_size = match std::env::var("EIVRO_QA_SIZE").as_deref() {
         Ok("compact") => [820.0, 640.0],
@@ -91,13 +103,49 @@ fn main() -> eframe::Result {
         _ => initial_size,
     };
     // Performance tests may use an isolated XDG_CONFIG_HOME; normal use follows XDG.
+    #[cfg(windows)]
+    let viewport = eivro::platform::windows::native::initial_viewport();
+    #[cfg(all(windows, feature = "qa"))]
+    let viewport = viewport.with_inner_size(initial_size);
     let options = eframe::NativeOptions {
+        #[cfg(windows)]
+        viewport,
+        #[cfg(unix)]
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Eivro")
             .with_app_id("io.eivro.Client")
             .with_inner_size(initial_size)
             .with_min_inner_size([820.0, 640.0]),
+        #[cfg(unix)]
         renderer: eframe::Renderer::Glow,
+        #[cfg(windows)]
+        renderer: eframe::Renderer::Wgpu,
+        #[cfg(windows)]
+        wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
+            desired_maximum_frame_latency: Some(1),
+            wgpu_setup: eframe::egui_wgpu::WgpuSetupCreateNew {
+                instance_descriptor: eframe::wgpu::InstanceDescriptor {
+                    backends: eframe::wgpu::Backends::DX12,
+                    flags: eframe::wgpu::InstanceFlags::empty(),
+                    ..Default::default()
+                },
+                power_preference: eframe::wgpu::PowerPreference::LowPower,
+                device_descriptor: std::sync::Arc::new(|_| eframe::wgpu::DeviceDescriptor {
+                    label: Some("Eivro UI"),
+                    required_limits: eframe::wgpu::Limits {
+                        max_texture_dimension_2d: 8192,
+                        ..Default::default()
+                    },
+                    // This UI needs small buffers, not the default DX12
+                    // allocation pools sized for a continuously rendered game.
+                    memory_hints: eframe::wgpu::MemoryHints::MemoryUsage,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }
+            .into(),
+            ..Default::default()
+        },
         vsync: true,
         #[cfg(target_os = "linux")]
         event_loop_builder: Some(Box::new(move |builder| {

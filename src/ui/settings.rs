@@ -253,10 +253,24 @@ impl App {
                     }
                 }
                 ui.add_space(12.0);
-                if command(ui, "Завершить Eivro", ButtonTone::Secondary, Vec2::ZERO, p).clicked()
+                if ui
+                    .add_enabled_ui(!self.quitting, |ui| {
+                        command(
+                            ui,
+                            if self.quitting {
+                                "Завершение…"
+                            } else {
+                                "Завершить Eivro"
+                            },
+                            ButtonTone::Secondary,
+                            Vec2::ZERO,
+                            p,
+                        )
+                    })
+                    .inner
+                    .clicked()
                 {
-                    self.quitting = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    self.request_quit(ctx);
                 }
             });
         if changed {

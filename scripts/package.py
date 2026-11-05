@@ -63,7 +63,7 @@ Priority: optional
 Architecture: {ARCH}
 Maintainer: Eivro project <maintainers@eivro.invalid>
 Installed-Size: {size}
-Depends: libc6 (>= {minimum}), libgcc-s1, libgl1, libegl1, libxkbcommon0, libwayland-client0, libx11-6, libxcursor1, libxrandr2, libxi6, polkitd | policykit-1, pkexec | policykit-1, nftables, ca-certificates, iproute2, libglib2.0-bin, gsettings-desktop-schemas, dconf-gsettings-backend
+Depends: libc6 (>= {minimum}), libgcc-s1, libgl1, libegl1, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libx11-6, libxcursor1, libxrandr2, libxi6, polkitd | policykit-1, pkexec | policykit-1, nftables, ca-certificates, iproute2, libglib2.0-bin, gsettings-desktop-schemas, dconf-gsettings-backend
 Recommends: xwayland
 Description: Native Linux proxy client with local routing policies
  Rust desktop interface with sing-box and Xray, light and dark themes,
@@ -96,7 +96,7 @@ Release: 1
 Summary: Native Linux proxy client with no application logs
 License: GPL-3.0-or-later
 BuildArch: {MACHINE}
-Requires: polkit, nftables, ca-certificates, iproute, glib2, gsettings-desktop-schemas, dconf, libGL, libEGL, libxkbcommon, libwayland-client, libX11, libXcursor, libXrandr, libXi
+Requires: polkit, nftables, ca-certificates, iproute, glib2, gsettings-desktop-schemas, dconf, libGL, libEGL, libxkbcommon, libxkbcommon-x11, libwayland-client, libX11, libXcursor, libXrandr, libXi
 Recommends: xorg-x11-server-Xwayland
 %global debug_package %{{nil}}
 %global __os_install_post %{{nil}}
@@ -150,10 +150,10 @@ def create_appimage(portable):
 
 def create_source():
     # Explicit whitelist: never ship work/, local tools, credentials or profiles.
-    names = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".gitignore",
-             ".github", "src", "native", "build.rs", "tests", "scripts", "docs", "assets", "packaging",
+    names = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".gitignore", ".gitattributes", ".cargo/config.toml",
+             ".github", "src", "native", "build.rs", "tests", "scripts", "docs", "assets", "packaging", "patches",
              "examples", "README.md", "PRIVACY.md", "LICENSE", "THIRD_PARTY.md",
-             "start.sh", "Eivro.desktop", "vendor/LICENSE", "vendor/xray.LICENSE"]
+             "start.sh", "Eivro.desktop", "vendor/LICENSE", "vendor/xray.LICENSE", "vendor/eframe"]
     with tarfile.open(DIST / f"eivro-{VERSION}-source.tar.gz", "w:gz", compresslevel=9) as archive:
         for name in names:
             item = ROOT / name
@@ -200,24 +200,32 @@ def main():
         copy(stage / f"usr/libexec/eivro/{name}", portable / name, 0o755)
     for name in ("README.md", "PRIVACY.md", "LICENSE", "THIRD_PARTY.md"):
         copy(ROOT / name, portable / name, 0o644)
-    for name in ("VERIFICATION.md", "NETWORK-EXITS.md", "UPGRADE.md", "NAME.md", "REFERENCE.md", "DEVELOPMENT.md", "RELEASE.md", "MACOS.md"):
+    for name in ("VERIFICATION.md", "NETWORK-EXITS.md", "DNS-ROUTING.md", "UPGRADE.md", "NAME.md", "REFERENCE.md", "DEVELOPMENT.md", "RELEASE.md", "MACOS.md"):
         copy(ROOT / "docs" / name, portable / "docs" / name, 0o644)
     copy(ROOT / "vendor/LICENSE", portable / "sing-box.LICENSE", 0o644)
     copy(ROOT / "vendor/xray.LICENSE", portable / "xray.LICENSE", 0o644)
     copy(ROOT / "assets/NotoEmoji.LICENSE", portable / "NotoEmoji.LICENSE", 0o644)
     copy(ROOT / "assets/Inter.LICENSE", portable / "Inter.LICENSE", 0o644)
+    copy(ROOT / "assets/rules/ru-direct/LICENSE", portable / "ru-direct.LICENSE", 0o644)
+    copy(ROOT / "assets/rules/ru-direct/source.json", portable / "ru-direct-source.json", 0o644)
     copy(ROOT / "packaging/io.eivro.Client.desktop", stage / "usr/share/applications/io.eivro.Client.desktop", 0o644)
     copy(ROOT / "assets/io.eivro.Client.svg", stage / "usr/share/icons/hicolor/scalable/apps/io.eivro.Client.svg", 0o644)
     copy(ROOT / "packaging/io.eivro.tun.policy", stage / "usr/share/polkit-1/actions/io.eivro.tun.policy", 0o644)
     for name in ("README.md", "PRIVACY.md", "THIRD_PARTY.md"):
         copy(ROOT / name, stage / f"usr/share/doc/eivro/{name}", 0o644)
-    for name in ("VERIFICATION.md", "NETWORK-EXITS.md", "UPGRADE.md", "NAME.md", "REFERENCE.md", "DEVELOPMENT.md", "RELEASE.md", "MACOS.md"):
+    for name in ("VERIFICATION.md", "NETWORK-EXITS.md", "DNS-ROUTING.md", "UPGRADE.md", "NAME.md", "REFERENCE.md", "DEVELOPMENT.md", "RELEASE.md", "MACOS.md"):
         copy(ROOT / "docs" / name, stage / "usr/share/doc/eivro/docs" / name, 0o644)
+    for name in ("README.md", "source.json", "fakeip-allocation.patch"):
+        source = ROOT / "patches/sing-box" / name
+        copy(source, portable / "patches/sing-box" / name, 0o644)
+        copy(source, stage / "usr/share/doc/eivro/patches/sing-box" / name, 0o644)
     copy(ROOT / "LICENSE", stage / "usr/share/licenses/eivro/LICENSE", 0o644)
     copy(ROOT / "vendor/LICENSE", stage / "usr/share/licenses/eivro/sing-box.LICENSE", 0o644)
     copy(ROOT / "vendor/xray.LICENSE", stage / "usr/share/licenses/eivro/xray.LICENSE", 0o644)
     copy(ROOT / "assets/NotoEmoji.LICENSE", stage / "usr/share/licenses/eivro/NotoEmoji.LICENSE", 0o644)
     copy(ROOT / "assets/Inter.LICENSE", stage / "usr/share/licenses/eivro/Inter.LICENSE", 0o644)
+    copy(ROOT / "assets/rules/ru-direct/LICENSE", stage / "usr/share/licenses/eivro/ru-direct.LICENSE", 0o644)
+    copy(ROOT / "assets/rules/ru-direct/source.json", stage / "usr/share/doc/eivro/ru-direct-source.json", 0o644)
     launcher = stage / "usr/bin/eivro"
     launcher.parent.mkdir(parents=True)
     launcher.write_text('#!/bin/sh\nexec /usr/libexec/eivro/eivro "$@"\n')

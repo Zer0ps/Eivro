@@ -45,21 +45,40 @@ impl Target {
     }
     pub fn application(text: &str) -> Result<Self> {
         let path = text.trim();
-        if !path.starts_with('/')
+        if !std::path::Path::new(path).is_absolute()
             || path.len() > 4096
             || path.chars().any(char::is_control)
-            || path.split('/').any(|p| p == "..")
-            || path.ends_with('/')
+            || path.split(['/', '\\']).any(|p| p == "..")
+            || path.ends_with(['/', '\\'])
         {
-            return Err("Укажите полный путь к программе, например /usr/bin/firefox.".into());
+            return Err("Укажите полный путь к исполняемому файлу программы.".into());
         }
-        Ok(Self::Application(path.into()))
+        #[cfg(windows)]
+        let path = path.replace('/', "\\");
+        #[cfg(not(windows))]
+        let path = path.to_owned();
+        Ok(Self::Application(path))
     }
     pub fn matcher(&self) -> Result<Value> {
         match self {
             Self::Address(s) => Ok(Rule::parse(s)?.matcher()),
             Self::Application(s) => {
                 Self::application(s)?;
+                #[cfg(windows)]
+                {
+                    // Upstream process_path is case-sensitive. Windows paths are
+                    // not; anchor and quote the literal path, never accept regex input.
+                    let mut pattern = String::from("(?i)^");
+                    for ch in s.replace('/', "\\").chars() {
+                        if r"\.^$|?*+()[]{}".contains(ch) {
+                            pattern.push('\\');
+                        }
+                        pattern.push(ch);
+                    }
+                    pattern.push('$');
+                    Ok(json!({"process_path_regex":[pattern]}))
+                }
+                #[cfg(unix)]
                 Ok(json!({"process_path":[s]}))
             }
         }
@@ -79,16 +98,26 @@ pub struct PolicyRule {
 pub struct RoutingProfile {
     pub name: String,
     pub rules: Vec<PolicyRule>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ru_preset: Option<crate::presets::RuPreset>,
 }
 impl Default for RoutingProfile {
     fn default() -> Self {
         Self {
             name: "Обычный".into(),
             rules: vec![],
+            ru_preset: None,
         }
     }
 }
 impl RoutingProfile {
+    pub fn ru(set: crate::presets::RuSet) -> Self {
+        Self {
+            name: set.name().into(),
+            rules: vec![],
+            ru_preset: Some(crate::presets::RuPreset::new(set)),
+        }
+    }
     pub fn validate(&self) -> Result<()> {
         if self.name.trim().is_empty()
             || self.name.chars().count() > 40
@@ -96,7 +125,11 @@ impl RoutingProfile {
         {
             return Err("Название профиля: от 1 до 40 символов.".into());
         }
-        validate_rules(&self.rules)
+        validate_rules(&self.rules)?;
+        if let Some(preset) = &self.ru_preset {
+            preset.validate()?;
+        }
+        Ok(())
     }
     /// Validate the whole batch before changing the draft.
     pub fn add_addresses(&mut self, text: &str, action: Action) -> Result<usize> {
@@ -141,7 +174,13 @@ impl RoutingProfile {
                 }
                 None
             })
-            .unwrap_or(Action::Proxy)
+            .unwrap_or_else(|| {
+                if self.ru_preset.as_ref().is_some_and(|p| p.matches(address)) {
+                    Action::Direct
+                } else {
+                    Action::Proxy
+                }
+            })
     }
 }
 pub fn validate_rules(rules: &[PolicyRule]) -> Result<()> {

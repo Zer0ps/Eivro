@@ -49,7 +49,9 @@ impl App {
                 Vec2::new(width, 0.0),
                 egui::Layout::top_down(egui::Align::Center),
                 |ui| {
-                    let state = if self.stopping {
+                    let state = if self.quitting {
+                        "Завершение…"
+                    } else if self.stopping {
                         "Отключение…"
                     } else if self.reconnect_pending {
                         "Переключение…"
@@ -201,7 +203,8 @@ impl App {
                     } else {
                         "Подключиться"
                     };
-                    let enabled = self.settings.selected_profile().is_some() || self.want_connected;
+                    let enabled = !self.quitting
+                        && (self.settings.selected_profile().is_some() || self.want_connected);
                     let action = ui
                         .add_enabled_ui(enabled, |ui| {
                             command(ui, action, ButtonTone::Primary, Vec2::new(width, 48.0), p)

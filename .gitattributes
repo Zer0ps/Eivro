@@ -1,0 +1,3 @@
+# Unified-diff context lines intentionally start with a space, including blank
+# lines and Go indentation. Preserve the pinned patch bytes exactly.
+patches/**/*.patch whitespace=-blank-at-eol,-space-before-tab

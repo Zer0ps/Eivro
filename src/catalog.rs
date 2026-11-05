@@ -267,7 +267,11 @@ pub fn date(timestamp: u64) -> String {
         return "—".into();
     };
     let mut tm = unsafe { std::mem::zeroed::<libc::tm>() };
-    if unsafe { libc::gmtime_r(&seconds, &mut tm) }.is_null() {
+    #[cfg(unix)]
+    let failed = unsafe { libc::gmtime_r(&seconds, &mut tm) }.is_null();
+    #[cfg(windows)]
+    let failed = unsafe { libc::gmtime_s(&mut tm, &seconds) } != 0;
+    if failed {
         return "—".into();
     }
     format!(

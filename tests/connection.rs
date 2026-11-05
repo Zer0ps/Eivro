@@ -1,3 +1,5 @@
+#![cfg(target_os = "linux")]
+
 use eivro::{
     config::{ConnectRequest, Mode},
     process::{self, Event, Session},
@@ -21,6 +23,7 @@ fn port() -> u16 {
 }
 fn request() -> ConnectRequest {
     ConnectRequest {
+        ru_preset: None,
         connections: vec![],
         uri: format!("ss://chacha20-ietf-poly1305:synthetic@127.0.0.1:{}", port()),
         port: port(),

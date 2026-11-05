@@ -18,6 +18,8 @@ pub enum Mode {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConnectRequest {
+    #[serde(default)]
+    pub ru_preset: Option<crate::presets::RuPreset>,
     pub uri: String,
     pub bypass: Vec<String>,
     pub port: u16,
@@ -46,6 +48,9 @@ pub fn generate_with_network(
         return Err("Kill switch пока доступен только в Linux.".into());
     }
     crate::network::validate(&req.connections)?;
+    if let Some(preset) = &req.ru_preset {
+        preset.validate()?;
+    }
     for rule in &req.policies {
         if let crate::policy::Action::Connection(id) = rule.action
             && !req.connections.iter().any(|connection| connection.id == id)
@@ -165,6 +170,22 @@ pub fn generate_with_network(
             dns_rules.push(dns);
         }
     }
+    let preset_rules = req
+        .ru_preset
+        .as_ref()
+        .map_or_else(Vec::new, |preset| preset.headless_rules());
+    if !preset_rules.is_empty() {
+        routes.push(json!({"rule_set":["ru-direct"],"action":"route","outbound":"direct"}));
+        if let Some(mut dns) = req
+            .ru_preset
+            .as_ref()
+            .and_then(|preset| preset.domain_matcher())
+        {
+            dns["action"] = json!("route");
+            dns["server"] = json!("direct-dns");
+            dns_rules.push(dns);
+        }
+    }
     let mut inbounds =
         vec![json!({"type":"mixed","tag":"local","listen":"127.0.0.1","listen_port":req.port})];
     if let Some(port) = req.probe_port {
@@ -202,6 +223,34 @@ pub fn generate_with_network(
         .as_array_mut()
         .unwrap()
         .extend(extra_dns);
+    if !preset_rules.is_empty() {
+        config["route"]["rule_set"] =
+            json!([{"type":"inline","tag":"ru-direct","rules":preset_rules}]);
+        config["outbounds"][1]["domain_resolver"] = json!("direct-dns");
+        for rule in config["route"]["rules"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .filter(|rule| rule["action"] == "sniff")
+        {
+            rule["domain_regex"] = json!([".+"]);
+            rule["invert"] = json!(true);
+        }
+    }
+    if req
+        .ru_preset
+        .as_ref()
+        .is_some_and(|preset| preset.has_networks())
+    {
+        let prefix = resolution_rules(&config, req, mode)?;
+        let routes = config["route"]["rules"].as_array_mut().unwrap();
+        let position = routes
+            .iter()
+            .position(|rule| rule["action"] == "hijack-dns")
+            .unwrap()
+            + 1;
+        routes.splice(position..position, prefix);
+    }
     #[cfg(target_os = "linux")]
     if req.kill_switch {
         for outbound in config["outbounds"].as_array_mut().unwrap() {
@@ -215,4 +264,64 @@ pub fn generate_with_network(
         }
     }
     Ok(config)
+}
+
+/// Resolve names before CIDR decisions, while honoring the first domain/app DNS policy.
+pub(crate) fn resolution_rules(
+    config: &Value,
+    request: &ConnectRequest,
+    mode: Mode,
+) -> Result<Vec<Value>> {
+    use crate::policy::{Action, Target};
+    let mut prefix = Vec::new();
+    // An IP rule needs real addresses. DNS selection follows the first
+    // domain/application policy; CIDR cannot choose a resolver before DNS.
+    let unresolved = json!({"ip_cidr":["0.0.0.0/0","::/0"],"invert":true});
+    for rule in request.policies.iter().filter(|rule| rule.enabled) {
+        if mode != Mode::Tun && matches!(rule.target, Target::Application(_)) {
+            continue;
+        }
+        if matches!(&rule.target, Target::Address(address) if matches!(Rule::parse(address), Ok(Rule::Network(_))))
+        {
+            continue;
+        }
+        let mut resolver = json!({"type":"logical","mode":"and",
+                "rules":[rule.target.matcher()?,unresolved.clone()]});
+        let tag = match rule.action {
+            Action::Direct => "direct-dns".to_owned(),
+            Action::Proxy => "proxy-dns".to_owned(),
+            Action::Connection(id) => format!("network-dns-{id}"),
+        };
+        let available = config["dns"]["servers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|server| server["tag"] == tag);
+        if available {
+            resolver["action"] = json!("resolve");
+            resolver["server"] = json!(tag);
+        } else {
+            resolver["action"] = json!("reject");
+        }
+        prefix.push(resolver);
+    }
+    for address in &request.bypass {
+        let rule = Rule::parse(address)?;
+        if !matches!(rule, Rule::Network(_)) {
+            prefix.push(json!({"type":"logical","mode":"and",
+                    "rules":[rule.matcher(),unresolved.clone()],
+                    "action":"resolve","server":"direct-dns"}));
+        }
+    }
+    if let Some(matcher) = request
+        .ru_preset
+        .as_ref()
+        .and_then(|preset| preset.domain_matcher())
+    {
+        prefix.push(json!({"type":"logical","mode":"and", "rules":[matcher,unresolved.clone()], "action":"resolve","server":"direct-dns"}));
+    }
+    prefix.push(json!({"type":"logical","mode":"and",
+            "rules":[{"domain_regex":[".+"]},unresolved],
+            "action":"resolve","server":"proxy-dns"}));
+    Ok(prefix)
 }

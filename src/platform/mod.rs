@@ -32,5 +32,16 @@ pub const PROXY_HINT: &str = "Системный прокси GNOME";
 #[cfg(target_os = "macos")]
 pub const PROXY_HINT: &str = "Системный прокси macOS";
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", windows, test))]
 pub mod wire;
+
+#[cfg(windows)]
+pub mod windows;
+#[cfg(windows)]
+pub const TUN_NAME: &str = "Eivro";
+#[cfg(windows)]
+pub const TUN_DNS_MODE: &str = "hijack";
+#[cfg(windows)]
+pub const HELPER_HINT: &str = "Для TUN установите Eivro вместе с системным помощником.";
+#[cfg(windows)]
+pub const PROXY_HINT: &str = "Системный прокси Windows";

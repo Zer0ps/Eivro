@@ -1,0 +1,44 @@
+{
+  "sing-box": {
+    "version": "1.14.4",
+    "url": "https://github.com/SagerNet/sing-box/releases/download/v1.14.4/sing-box-1.14.4-windows-amd64.zip",
+    "sha256": "99185d75d314a07dbba4a130c8ad986cbeb629a07927975636b341ca61f991df",
+    "files": {
+      "sing-box-1.14.4-windows-amd64/sing-box.exe": {
+        "target": "sing-box.exe",
+        "sha256": "8f30682ee198855440d2a7fe070d5d3653793b2d01bb8c85eea88f93bbe7c8b9"
+      },
+      "sing-box-1.14.4-windows-amd64/libcronet.dll": {
+        "target": "libcronet.dll",
+        "sha256": "3217c6260fbca5f16072e0b79735742f40109a63bb0ff88fd6b96dd6b54a2928"
+      },
+      "sing-box-1.14.4-windows-amd64/LICENSE": {
+        "target": "sing-box.LICENSE",
+        "sha256": "bb3805862b583aee73ad6f7805ec634747a37257a637a3069857843f05ea589c"
+      }
+    }
+  },
+  "xray": {
+    "version": "26.10.21",
+    "url": "https://github.com/XTLS/Xray-core/releases/download/v26.10.21/Xray-windows-64.zip",
+    "sha256": "fc58c39ee2f2717b4c54d28d374362389e5319b20ae44aea76ea45a5243ec827",
+    "files": {
+      "xray.exe": {
+        "target": "xray.exe",
+        "sha256": "c77a00eb84fb93ae044c2d771a1cabcc033b81e487253fbc35b12df6879c1e15"
+      },
+      "wintun.dll": {
+        "target": "wintun.dll",
+        "sha256": "e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce"
+      },
+      "LICENSE": {
+        "target": "xray.LICENSE",
+        "sha256": "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"
+      },
+      "LICENSE-Wintun": {
+        "target": "wintun.LICENSE",
+        "sha256": "183adac21e7d96c508c8fd34d394b7b6708bc81564ad1bad61ab66143a008cd2"
+      }
+    }
+  }
+}

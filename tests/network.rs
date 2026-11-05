@@ -12,6 +12,7 @@ use std::{
 
 fn request() -> ConnectRequest {
     ConnectRequest {
+        ru_preset: None,
         uri: "ss://chacha20-ietf-poly1305:synthetic@127.0.0.1:443".into(),
         port: 2080,
         probe_port: Some(2081),
@@ -32,8 +33,12 @@ fn request() -> ConnectRequest {
     }
 }
 fn check(config: &serde_json::Value) {
-    let mut child = Command::new("vendor/sing-box")
-        .args(["check", "-c", "/dev/stdin"])
+    let mut child = Command::new(eivro::process::core_path().unwrap())
+        .args([
+            "check",
+            "-c",
+            if cfg!(windows) { "stdin" } else { "/dev/stdin" },
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -126,6 +131,7 @@ fn manual_dns_never_falls_back_to_interface_dns_and_invalid_references_are_error
     assert!(settings.validate().is_err());
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn resolved_snapshot_filters_unusable_or_non_plain_dns_and_keeps_link_scope() {
     let mut links = [
@@ -171,8 +177,8 @@ fn old_settings_migrate_without_changing_existing_rules_or_network_preferences()
     let mut settings:Settings=serde_json::from_value(json!({"schema":3,"mode":"tun","theme":"light","accent":[5,6,7],"routing_profiles":[{"name":"Обычный","rules":[{"enabled":true,"target":{"kind":"address","value":"*.example.test"},"action":"direct"}]}]})).unwrap();
     let old = settings.routing_profiles.clone();
     settings.migrate().unwrap();
-    assert_eq!(settings.schema, 4);
-    assert_eq!(settings.routing_profiles, old);
+    assert_eq!(settings.schema, 5);
+    assert_eq!(&settings.routing_profiles[..old.len()], old.as_slice());
     assert!(settings.connections.is_empty());
     assert_eq!(settings.accent, [5, 6, 7]);
     settings.connections = request().connections;
@@ -206,10 +212,12 @@ fn kill_switch_cannot_break_the_outer_work_vpn_silently() {
     settings.kill_switch = false;
     settings.validate().unwrap();
     req.policies[0].enabled = false;
+    #[cfg(target_os = "linux")]
     config::generate(&req, Mode::Tun).unwrap();
 }
 
 #[test]
+#[cfg(unix)]
 fn schema_three_is_backed_up_privately_before_the_new_format_is_written() {
     use std::os::unix::fs::PermissionsExt;
     let dir = std::env::temp_dir().join(format!("eivro-schema4-{}", std::process::id()));

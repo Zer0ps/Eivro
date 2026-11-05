@@ -32,6 +32,7 @@ fn xray_and_singbox_endpoints_are_imported_without_provider_policies() {
     for p in profiles {
         let c = eivro::config::generate(
             &eivro::config::ConnectRequest {
+                ru_preset: None,
                 connections: vec![],
                 probe_port: None,
                 policies: vec![],

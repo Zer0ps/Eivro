@@ -1,3 +1,7 @@
+#[cfg(windows)]
+fn main() {
+    eivro::platform::windows::service::main();
+}
 #[cfg(target_os = "macos")]
 fn main() {
     eivro::platform::macos::daemon::main();

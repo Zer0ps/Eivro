@@ -410,41 +410,47 @@ mod tests {
     #[test]
     fn real_ui_waits_for_running_event_and_returns_to_idle() {
         use eframe::App as _;
-        let ctx = egui::Context::default();
-        crate::emoji::install(&ctx);
-        let mut app = App::model(Settings::default(), None, None);
-        let mut native = eframe::Frame::_new_kittest();
-        let (tx, rx) = mpsc::channel();
-        app.events = Some(rx);
-        app.want_connected = true;
-        tx.send(Event::Progress("Проверка соединения…")).unwrap();
-        for step in 0..65 {
-            if step == 10 {
-                tx.send(Event::Running).unwrap();
-            }
-            let output = ctx.run(
-                egui::RawInput {
-                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(960.0, 760.0))),
-                    time: Some(step as f64 / 10.0),
-                    ..Default::default()
-                },
-                |ctx| app.update(ctx, &mut native),
-            );
-            if step < 10 {
-                assert!(app.connection_effect.active.is_none());
-            } else if step < 50 {
-                assert_eq!(
-                    app.connection_effect.active.as_ref().unwrap().kind,
-                    Kind::Ripple
+        for size in [
+            Vec2::new(960.0, 760.0),
+            Vec2::new(960.0, 688.0),
+            Vec2::new(700.0, 480.0),
+        ] {
+            let ctx = egui::Context::default();
+            crate::emoji::install(&ctx);
+            let mut app = App::model(Settings::default(), None, None);
+            let mut native = eframe::Frame::_new_kittest();
+            let (tx, rx) = mpsc::channel();
+            app.events = Some(rx);
+            app.want_connected = true;
+            tx.send(Event::Progress("Проверка соединения…")).unwrap();
+            for step in 0..65 {
+                if step == 10 {
+                    tx.send(Event::Running).unwrap();
+                }
+                let output = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+                        time: Some(step as f64 / 10.0),
+                        ..Default::default()
+                    },
+                    |ctx| app.update(ctx, &mut native),
                 );
-            } else if step > 54 {
-                assert!(app.connection_effect.active.is_none());
-                assert!(
-                    output.viewport_output[&egui::ViewportId::ROOT].repaint_delay
-                        > Duration::from_secs(60)
-                );
+                if step < 10 {
+                    assert!(app.connection_effect.active.is_none());
+                } else if step < 50 {
+                    assert_eq!(
+                        app.connection_effect.active.as_ref().unwrap().kind,
+                        Kind::Ripple
+                    );
+                } else if step > 54 {
+                    assert!(app.connection_effect.active.is_none());
+                    assert!(
+                        output.viewport_output[&egui::ViewportId::ROOT].repaint_delay
+                            > Duration::from_secs(60)
+                    );
+                }
             }
+            assert!(app.running && app.want_connected);
         }
-        assert!(app.running && app.want_connected);
     }
 }

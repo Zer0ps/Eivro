@@ -123,6 +123,7 @@ fn stalled_system_dns_bounds_subscription_and_session_cancellation() {
         .unwrap()
         .with_file_name("worker.pid");
     let req = ConnectRequest {
+        ru_preset: None,
         connections: vec![],
         uri: "vless://00000000-0000-4000-8000-000000000001@resolver.invalid:443?security=reality&sni=example.com&fp=firefox&pbk=CQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=1122334455667788&type=tcp&flow=xtls-rprx-vision".into(),
         port: std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port(),

@@ -2,7 +2,7 @@ name: Desktop packages
 
 on:
   push:
-    branches: [main, master, 'macos/**']
+    branches: [main, master, 'macos/**', 'windows/**']
     tags: ['v*']
   pull_request:
   workflow_dispatch:
@@ -31,11 +31,11 @@ jobs:
             libx11-dev libxi-dev libxcursor-dev libxrandr-dev libxkbcommon-dev \
             libwayland-dev libegl1-mesa-dev libgl1-mesa-dev libudev-dev \
             rpm dbus-daemon dbus-x11 dconf-cli gsettings-desktop-schemas \
-            nftables iproute2 python3 curl xz-utils binutils openssl util-linux
+            nftables iproute2 python3 curl xz-utils binutils openssl util-linux patch
           # Only this disposable runner: exercise nftables/capability tests inside
           # unprivileged user+network namespaces, without touching runner routes.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      - name: Install pinned Rust and verified upstream binaries
+      - name: Install pinned Rust and verified cores
         run: |
           rustup show active-toolchain
           python3 scripts/fetch-core.py
@@ -173,9 +173,68 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 50
+    env:
+      CARGO_BUILD_JOBS: '3'
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: rust-cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-x64-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ github.sha }}
+          restore-keys: windows-x64-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-
+      - name: Verify toolchain, source metadata and official cores
+        run: |
+          rustup show active-toolchain
+          if ($LASTEXITCODE) { throw 'Rust toolchain is unavailable.' }
+          python scripts/check-release.py
+          if ($LASTEXITCODE) { throw 'Release metadata is inconsistent.' }
+          python scripts/fetch-windows.py
+          if ($LASTEXITCODE) { throw 'Core verification failed.' }
+      - name: Lint and test native Windows code
+        run: |
+          cargo fmt --all --check
+          if ($LASTEXITCODE) { throw 'Formatting failed.' }
+          cargo clippy --locked --release --all-targets -- -D warnings
+          if ($LASTEXITCODE) { throw 'Lint failed.' }
+          cargo test --locked --release -- --test-threads=1
+          if ($LASTEXITCODE) { throw 'Tests failed.' }
+      - name: Build Windows installer and portable archive
+        run: ./scripts/build-windows.ps1
+      - name: Install and check the disposable Windows runner
+        run: ./scripts/smoke-windows.ps1
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        if: steps.rust-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: eivro-windows-x86_64
+          path: |
+            dist/*-windows-x86_64-setup.exe
+            dist/*-windows-x86_64.zip
+            dist/SHA256SUMS-windows-x86_64
+          if-no-files-found: error
+          retention-days: 14
+
   release:
     if: startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
-    needs: [build, install, macos]
+    needs: [build, install, macos, windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -193,14 +252,18 @@ jobs:
           pattern: eivro-macos-*
           path: dist
           merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: eivro-windows-x86_64
+          path: dist
       - name: Create and publish release after every check passed
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 scripts/check-release.py
-          (cd dist && sha256sum --check SHA256SUMS && sha256sum --check SHA256SUMS-macos-*)
+          (cd dist && sha256sum --check SHA256SUMS && sha256sum --check SHA256SUMS-macos-* && sha256sum --check SHA256SUMS-windows-*)
           gh release create "$GITHUB_REF_NAME" --verify-tag --draft \
-            --title "Eivro $GITHUB_REF_NAME · macOS preview" \
+            --title "Eivro $GITHUB_REF_NAME" \
             --notes-file docs/RELEASE.md \
-            dist/*.deb dist/*.rpm dist/*.tar.gz dist/*.pkg dist/*.dmg dist/SHA256SUMS*
+            dist/*.deb dist/*.rpm dist/*.tar.gz dist/*.pkg dist/*.dmg dist/*.exe dist/*.zip dist/SHA256SUMS*
           gh release edit "$GITHUB_REF_NAME" --draft=false
