@@ -305,6 +305,27 @@ impl App {
     }
 
     pub(super) fn commit(&mut self, next: Settings) -> bool {
+        #[cfg(target_os = "linux")]
+        let check = eivro::domain_dns::check_ranges;
+        #[cfg(not(target_os = "linux"))]
+        let check = || Ok(());
+        self.commit_checked(next, check)
+    }
+
+    fn commit_checked(
+        &mut self,
+        next: Settings,
+        _check: impl FnOnce() -> eivro::Result<()>,
+    ) -> bool {
+        #[cfg(target_os = "linux")]
+        if self.want_connected
+            && next.mode == Mode::Tun
+            && network_settings_changed(&self.settings, &next)
+            && let Err(error) = _check()
+        {
+            self.error = Some(format!("{error} Изменения не применены."));
+            return false;
+        }
         let result = self
             .path
             .as_ref()
@@ -427,6 +448,62 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn rejected_network_edit_preserves_settings_and_connection_intent() {
+        let mut settings = Settings {
+            mode: Mode::Tun,
+            ..Default::default()
+        };
+        settings.routing_profiles[0]
+            .add_addresses("old.test", eivro::policy::Action::Direct)
+            .unwrap();
+        let dir = std::env::temp_dir().join(format!("eivro-preflight-{}", std::process::id()));
+        let path = dir.join("settings.json");
+        storage::save(&path, &settings).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let mut app = App::model(settings, Some(path.clone()), None);
+        app.want_connected = true;
+        app.running = true;
+        let previous = serde_json::to_value(&app.settings).unwrap();
+        let mut next = app.settings.clone();
+        next.routing_profiles[0]
+            .add_addresses("new.test", eivro::policy::Action::Direct)
+            .unwrap();
+        assert!(!app.commit_checked(next, || Err("Синтетический конфликт DNS".into())));
+        assert_eq!(serde_json::to_value(&app.settings).unwrap(), previous);
+        assert!(app.want_connected && app.running && !app.stopping);
+        assert!(app.error.unwrap().contains("Синтетический конфликт DNS"));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn inactive_profiles_and_labels_do_not_reconfigure_the_network() {
+        let old = Settings::default();
+        let mut next = old.clone();
+        next.routing_profiles[1]
+            .add_addresses("inactive.test", eivro::policy::Action::Direct)
+            .unwrap();
+        next.routing_profiles[0].name = "Renamed".into();
+        assert!(!network_settings_changed(&old, &next));
+        next.routing_profiles[0]
+            .add_addresses("active.test", eivro::policy::Action::Direct)
+            .unwrap();
+        assert!(network_settings_changed(&old, &next));
+        next = old.clone();
+        next.connections.push(eivro::network::Connection {
+            id: 1,
+            name: "Work".into(),
+            interface: "work0".into(),
+            dns: Default::default(),
+            gateway: None,
+        });
+        assert!(!network_settings_changed(&old, &next));
+        next.connections[0].gateway = Some("gateway.test".into());
+        assert!(network_settings_changed(&old, &next));
+    }
     #[test]
     fn all_palettes_keep_text_and_custom_accents_legible() {
         use eivro::storage::Colorway;

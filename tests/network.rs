@@ -20,6 +20,8 @@ fn request() -> ConnectRequest {
         bypass: vec![],
         kill_switch: false,
         connections: vec![Connection {
+            #[cfg(target_os = "linux")]
+            gateway: None,
             id: 1,
             name: "Работа".into(),
             interface: "work0".into(),
@@ -31,6 +33,48 @@ fn request() -> ConnectRequest {
             action: Action::Connection(1),
         }],
     }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn gateway_migration_has_a_private_rollback_and_rejects_kill_switch_bypass() {
+    use std::{fs, os::unix::fs::PermissionsExt};
+    let dir = std::env::temp_dir().join(format!("eivro-schema6-test-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("settings.json");
+    let original = serde_json::to_vec(&Settings {
+        schema: 5,
+        ..Default::default()
+    })
+    .unwrap();
+    fs::write(&path, &original).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    let mut migrated = eivro::storage::load(&path).unwrap();
+    migrated.connections = request().connections;
+    migrated.connections[0].gateway = Some("vpn.example.test".into());
+    eivro::storage::save(&path, &migrated).unwrap();
+    let backup = dir.join("settings-before-1.3.4.json");
+    assert_eq!(fs::read(&backup).unwrap(), original);
+    assert_eq!(
+        fs::metadata(&backup).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(
+        eivro::storage::load(&path).unwrap().connections[0].gateway,
+        Some("vpn.example.test".into())
+    );
+    migrated.kill_switch = true;
+    assert!(migrated.validate().unwrap_err().contains("Kill switch"));
+    let mut request = request();
+    request.connections = migrated.connections;
+    request.policies.clear();
+    request.kill_switch = true;
+    assert!(
+        config::generate(&request, Mode::Tun)
+            .unwrap_err()
+            .contains("Kill switch")
+    );
+    fs::remove_dir_all(dir).unwrap();
 }
 fn check(config: &serde_json::Value) {
     let mut child = Command::new(eivro::process::core_path().unwrap())
@@ -177,7 +221,7 @@ fn old_settings_migrate_without_changing_existing_rules_or_network_preferences()
     let mut settings:Settings=serde_json::from_value(json!({"schema":3,"mode":"tun","theme":"light","accent":[5,6,7],"routing_profiles":[{"name":"Обычный","rules":[{"enabled":true,"target":{"kind":"address","value":"*.example.test"},"action":"direct"}]}]})).unwrap();
     let old = settings.routing_profiles.clone();
     settings.migrate().unwrap();
-    assert_eq!(settings.schema, 5);
+    assert_eq!(settings.schema, eivro::storage::SCHEMA);
     assert_eq!(&settings.routing_profiles[..old.len()], old.as_slice());
     assert!(settings.connections.is_empty());
     assert_eq!(settings.accent, [5, 6, 7]);

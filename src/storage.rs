@@ -5,6 +5,10 @@ use crate::{
     routing::parse_rules,
 };
 use serde::{Deserialize, Serialize};
+#[cfg(target_os = "linux")]
+pub const SCHEMA: u32 = 6;
+#[cfg(not(target_os = "linux"))]
+pub const SCHEMA: u32 = 5;
 #[cfg(unix)]
 use std::{
     fs::{self, File, OpenOptions},
@@ -63,7 +67,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            schema: 5,
+            schema: SCHEMA,
             connections: Vec::new(),
             routing_profiles: std::iter::once(Default::default())
                 .chain(crate::presets::RuSet::ALL.map(crate::policy::RoutingProfile::ru))
@@ -91,7 +95,7 @@ impl Default for Settings {
 
 impl Settings {
     pub fn migrate(&mut self) -> Result<()> {
-        if !(1..=5).contains(&self.schema) {
+        if !(1..=SCHEMA).contains(&self.schema) {
             return Err("Версия настроек не поддерживается.".into());
         }
         if !self.profiles.is_empty() {
@@ -157,7 +161,7 @@ impl Settings {
                 self.routing_profiles.push(profile);
             }
         }
-        self.schema = 5;
+        self.schema = SCHEMA;
         self.validate()
     }
     pub fn current(&self) -> Option<&crate::catalog::Subscription> {
@@ -206,7 +210,7 @@ impl Settings {
         Ok(())
     }
     pub fn validate(&self) -> Result<()> {
-        if self.schema != 5 {
+        if self.schema != SCHEMA {
             return Err("Версия настроек не поддерживается.".into());
         }
         if self.subscriptions.len() > 32
@@ -238,6 +242,10 @@ impl Settings {
             );
         }
         crate::network::validate(&self.connections)?;
+        #[cfg(target_os = "linux")]
+        if self.kill_switch && self.connections.iter().any(|c| c.gateway.is_some()) {
+            return Err("Kill switch несовместим с обходом TUN для сервера другого VPN.".into());
+        }
         for rule in self
             .routing_profiles
             .iter()
@@ -497,10 +505,12 @@ mod file {
         let old: serde_json::Value = serde_json::from_slice(&data)
             .map_err(|_| "Прежние настройки повреждены; запись отменена.")?;
         let old_schema = old["schema"].as_u64().unwrap_or(0);
-        if old_schema >= 5 {
+        if old_schema >= u64::from(SCHEMA) {
             return Ok(());
         }
-        let backup = dir.join(if old_schema == 4 {
+        let backup = dir.join(if old_schema == 5 {
+            "settings-before-1.3.4.json"
+        } else if old_schema == 4 {
             "settings-before-1.3.2.json"
         } else if old_schema == 3 {
             "settings-before-1.1.json"

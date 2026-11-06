@@ -68,6 +68,12 @@ impl App {
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
     }
     fn network_reconnect(&mut self) {
+        // Login emits several network notifications while polkit is still open.
+        // Let the initial attempt finish; restarting it would reopen the dialog.
+        #[cfg(target_os = "linux")]
+        if self.session.is_some() && !self.running && !self.stopping {
+            return;
+        }
         self.recovery.schedule(Instant::now());
         if let Some(session) = &mut self.session {
             session.restart();
@@ -89,5 +95,42 @@ impl App {
         if self.session.is_none() && self.recovery.ready(Instant::now()) {
             self.start_connection(ctx);
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    #[test]
+    fn cancelled_autoconnect_stays_idle_after_network_and_wake_events() {
+        let ctx = egui::Context::default();
+        let mut app = App::model(
+            Settings {
+                autoconnect: true,
+                mode: Mode::Tun,
+                ..Default::default()
+            },
+            None,
+            None,
+        );
+        app.want_connected = true;
+        app.recovery.schedule(Instant::now());
+        let (tx, rx) = mpsc::channel();
+        app.events = Some(rx);
+        tx.send(Event::Failed(eivro::tun::AUTHORIZATION_DENIED.into()))
+            .unwrap();
+        app.receive(&ctx);
+        assert!(!app.want_connected && app.error.is_none() && app.recovery.due.is_none());
+        // Even stale notifications/timers cannot turn cancellation into consent.
+        for _ in 0..3 {
+            app.network_reconnect();
+            app.recover(&ctx);
+            assert!(!app.want_connected && app.session.is_none() && app.recovery.due.is_none());
+        }
+        assert!(
+            app.settings.autoconnect,
+            "Next-login preference must not be changed"
+        );
+        assert!(!app.quitting);
     }
 }

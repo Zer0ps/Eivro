@@ -54,6 +54,8 @@ struct NetworkDraft {
     manual_interface: bool,
     manual: bool,
     dns: String,
+    #[cfg(target_os = "linux")]
+    gateway: String,
     error: Option<String>,
 }
 pub(super) struct Edit {
@@ -368,6 +370,8 @@ impl Editor {
                 manual_interface: false,
                 manual: false,
                 dns: String::new(),
+                #[cfg(target_os = "linux")]
+                gateway: String::new(),
                 error: None,
             });
         }
@@ -388,6 +392,8 @@ impl Editor {
                     manual_interface: false,
                     manual: false,
                     dns: String::new(),
+                    #[cfg(target_os = "linux")]
+                    gateway: String::new(),
                     error: None,
                 });
             }
@@ -1092,6 +1098,11 @@ impl Editor {
                                                 .clicked()
                                                 {
                                                     self.network_edit = Some(NetworkDraft {
+                                                        #[cfg(target_os = "linux")]
+                                                        gateway: connection
+                                                            .gateway
+                                                            .clone()
+                                                            .unwrap_or_default(),
                                                         id: Some(connection.id),
                                                         name: connection.name.clone(),
                                                         interface: connection.interface.clone(),
@@ -1403,6 +1414,17 @@ impl Editor {
                         );
                     }
                     ui.add_space(14.0);
+                    #[cfg(target_os = "linux")]
+                    {
+                        label(ui, "Сервер другого VPN · необязательно", p);
+                        ui.add(egui::TextEdit::singleline(&mut draft.gateway)
+                            .hint_text("vpn.company.ru или IP")
+                            .desired_width(f32::INFINITY)
+                            .char_limit(253)
+                            .margin(Vec2::new(12.0, 9.0)));
+                        ui.label(RichText::new("Его IP обходит TUN во всех профилях, чтобы VPN не зависели друг от друга.").small().color(p.muted));
+                        ui.add_space(14.0);
+                    }
                     egui::CollapsingHeader::new("Как это работает").show(ui, |ui| {
                         ui.label(
                             RichText::new(
@@ -1456,6 +1478,10 @@ impl Editor {
                                 .ok_or("Нет идентификатора выхода.")?,
                         };
                         let connection = Connection {
+                            #[cfg(target_os = "linux")]
+                            gateway: if draft.gateway.trim().is_empty() { None } else {
+                                Some(eivro::domain_dns::gateways::canonical(&draft.gateway)?)
+                            },
                             id,
                             name: draft.name.trim().into(),
                             interface: draft.interface.trim().into(),
@@ -1548,9 +1574,15 @@ impl App {
             next.routing_profiles = edit.profiles;
             next.selected_routing = edit.selected;
             next.connections = edit.connections;
+            #[cfg(target_os = "linux")]
+            let changed = network_settings_changed(&self.settings, &next);
+            #[cfg(not(target_os = "linux"))]
+            let changed = true;
             if self.commit(next) {
                 editor = Editor::new(&self.settings);
-                self.reconfigure();
+                if changed {
+                    self.reconfigure();
+                }
             }
         }
         self.editor = Some(editor);
@@ -1688,6 +1720,8 @@ mod tests {
                 |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         let connections = [Connection {
+                            #[cfg(target_os = "linux")]
+                            gateway: None,
                             id: 1,
                             name: "Работа".into(),
                             interface: "tun0".into(),

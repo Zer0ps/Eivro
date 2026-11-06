@@ -3,6 +3,7 @@
 use crate::{Result, config::ConnectRequest, policy::Target, routing::Rule};
 use serde_json::{Value, json};
 
+pub mod gateways;
 pub(crate) mod state;
 
 pub const IPV4_RANGE: &str = "198.18.0.0/15";
@@ -36,8 +37,12 @@ pub fn check_ranges() -> Result<()> {
         )?;
         let routes: Vec<Value> =
             serde_json::from_slice(&output).map_err(|_| "Не удалось проверить диапазон DNS.")?;
-        if routes.iter().any(range_conflict) {
-            return Err("Диапазон виртуальных адресов DNS занят другой сетью или VPN.".into());
+        if let Some(route) = routes.iter().find(|route| range_conflict(route)) {
+            let destination = route["dst"].as_str().unwrap_or("");
+            let device = route["dev"].as_str().unwrap_or("?");
+            return Err(format!(
+                "Конфликт DNS: маршрут {destination} через {device}. Если это сервер другого VPN, укажите его в сетевом выходе и переподключите этот VPN."
+            ));
         }
     }
     Ok(())

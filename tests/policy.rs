@@ -9,7 +9,7 @@ use serde_json::json;
 fn schema_two_migrates_rules_without_changing_subscriptions_or_preferences() {
     let mut settings:Settings=serde_json::from_value(json!({"schema":2,"bypass":["*.example.test","10.0.0.0/8"],"theme":"light","mode":"tun","accent":[1,2,3]})).unwrap();
     settings.migrate().unwrap();
-    assert_eq!(settings.schema, 5);
+    assert_eq!(settings.schema, eivro::storage::SCHEMA);
     assert_eq!(settings.routing_profiles.len(), 3);
     assert_eq!(settings.routing_profiles[0].rules.len(), 2);
     assert_eq!(settings.accent, [1, 2, 3]);

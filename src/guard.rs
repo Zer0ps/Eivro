@@ -17,8 +17,13 @@ pub struct SystemBackend {
     guard: Option<Guard>,
     dns: Option<crate::domain_dns::state::State>,
     dns_active: bool,
+    gateways: crate::domain_dns::gateways::Gateways,
 }
 impl crate::tun::Backend for SystemBackend {
+    fn preflight(&self, req: &crate::config::ConnectRequest) -> Result<()> {
+        crate::config::generate(req, crate::config::Mode::Tun)?;
+        crate::domain_dns::check_ranges()
+    }
     fn start(&mut self, req: &crate::config::ConnectRequest) -> Result<crate::tun::Running> {
         crate::config::generate(req, crate::config::Mode::Tun)?;
         crate::process::tun_preflight()?;
@@ -31,6 +36,7 @@ impl crate::tun::Backend for SystemBackend {
             &crate::network::interfaces(),
         )?;
         crate::domain_dns::configure(&mut config, req)?;
+        self.gateways.configure(&mut config, req)?;
         if self.dns.is_none() {
             self.dns = Some(crate::domain_dns::state::State::open()?);
         }
@@ -58,16 +64,12 @@ impl crate::tun::Backend for SystemBackend {
             let addresses = if req.kill_switch {
                 vec![resolve(&parsed.host)?]
             } else {
-                crate::resolver::resolve_host(
+                crate::domain_dns::gateways::resolve_transport(
                     &parsed.host,
-                    443,
                     std::time::Instant::now() + std::time::Duration::from_secs(10),
                     None,
                 )
-                .map_err(|_| "Не удалось разрешить адрес VPN-сервера.")?
-                .into_iter()
-                .map(|address| address.ip())
-                .collect()
+                .map_err(|_| "Не удалось получить реальный IP VPN-сервера.")?
             };
             let mut hosts = serde_json::Map::new();
             hosts.insert(parsed.host, serde_json::json!(addresses));
@@ -113,6 +115,9 @@ impl crate::tun::Backend for SystemBackend {
         if !preserve_dns && self.dns_active {
             crate::domain_dns::flush_system_cache()?;
             self.dns_active = false;
+        }
+        if !preserve_dns {
+            self.gateways = Default::default();
         }
         Ok(())
     }

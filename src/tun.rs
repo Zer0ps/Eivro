@@ -7,7 +7,10 @@ use std::{
     os::fd::{AsRawFd, OwnedFd},
     os::unix::net::UnixStream,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
-    sync::Mutex,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -38,6 +41,9 @@ impl Drop for Running {
     }
 }
 pub trait Backend {
+    fn preflight(&self, _request: &ConnectRequest) -> Result<()> {
+        Ok(())
+    }
     fn start(&mut self, request: &ConnectRequest) -> Result<Running>;
     fn stop(&mut self, preserve_protection: bool, preserve_dns: bool) -> Result<()>;
     fn retire(&mut self) -> Result<()> {
@@ -109,6 +115,20 @@ pub fn serve_backend(
                 let message: CommandMessage =
                     serde_json::from_slice(&pending[..end]).map_err(|_| "request")?;
                 pending.drain(..=end);
+                // Reject predictable conflicts without dropping the current core.
+                if let CommandMessage::Start { request } = &message
+                    && let Err(error) = backend.preflight(request)
+                {
+                    let detail = if error.len() <= 384 && !error.chars().any(char::is_control) {
+                        serde_json::to_string(&error).unwrap()
+                    } else {
+                        "\"Не удалось проверить настройки TUN.\"".to_owned()
+                    };
+                    writeln!(output, "START_ERROR {detail}")
+                        .and_then(|_| output.flush())
+                        .map_err(|_| "reply")?;
+                    continue;
+                }
                 core.take();
                 pid.take();
                 companion.take();
@@ -178,8 +198,17 @@ pub fn serve_backend(
 #[derive(Default)]
 pub struct Controller {
     helper: Mutex<Option<Helper>>,
+    authorization_denied: AtomicBool,
 }
+pub const AUTHORIZATION_DENIED: &str = "Доступ TUN отменён.";
 impl Controller {
+    pub fn authorization_denied(&self) -> bool {
+        self.authorization_denied.load(Ordering::Acquire)
+    }
+    /// Only an explicit Connect action may permit a new authorization prompt.
+    pub fn allow_authorization(&self) {
+        self.authorization_denied.store(false, Ordering::Release);
+    }
     pub fn retire(&self) -> Result<()> {
         let mut holder = self.helper.lock().map_err(|_| "Ошибка управления TUN.")?;
         if let Some(helper) = holder.as_mut() {
@@ -208,6 +237,9 @@ impl Controller {
         xray: i32,
         mut ready: impl FnMut(i32) -> Result<bool>,
     ) -> Result<()> {
+        if self.authorization_denied() {
+            return Err(AUTHORIZATION_DENIED.into());
+        }
         let mut holder = self.helper.lock().map_err(|_| "Ошибка управления TUN.")?;
         if holder
             .as_mut()
@@ -220,7 +252,7 @@ impl Controller {
         }
         let helper = holder.as_mut().unwrap();
         let mut started = false;
-        let result = (|| {
+        let mut result = (|| {
             if !helper.start(req, watch, xray)? {
                 return Ok(());
             }
@@ -241,6 +273,25 @@ impl Controller {
                 Err("Соединение TUN остановлено: ядро завершилось.".into())
             }
         })();
+        // pkexec may close stdout/its input before pidfd becomes readable.
+        // Classify the exit status regardless of which pipe event won the race.
+        if !started && result.is_err() {
+            let mut fd = process::pollfd(helper.pid.as_raw_fd(), libc::POLLIN);
+            unsafe {
+                libc::poll(&mut fd, 1, 100);
+            }
+            if helper
+                .child
+                .try_wait()
+                .ok()
+                .flatten()
+                .and_then(|s| s.code())
+                .is_some_and(|code| code == 126 || code == 127)
+            {
+                self.authorization_denied.store(true, Ordering::Release);
+                result = Err(AUTHORIZATION_DENIED.into());
+            }
+        }
         // Stop the core, keep the helper/authorization until the application closes.
         let reconnecting = restart_requested(watch) || (result.is_err() && !cancelled(watch));
         let preserve = req.kill_switch && reconnecting;
@@ -477,6 +528,47 @@ impl Drop for Helper {
 mod tests {
     use super::*;
     #[test]
+    fn cancelled_authorization_is_latched_across_pipe_exit_races() {
+        for code in [126, 127] {
+            let child = Command::new("python3")
+                .args(["-c", &format!("import os,time; time.sleep(.02); os.close(0); os.close(1); time.sleep(.02); os._exit({code})")])
+                .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+            let controller = Controller {
+                helper: Mutex::new(Some(Helper::from_child(child).unwrap())),
+                ..Default::default()
+            };
+            let request = ConnectRequest {
+                uri: "synthetic".into(),
+                port: 2080,
+                bypass: vec!["x".repeat(2048); 16],
+                ru_preset: None,
+                bridge_port: None,
+                probe_port: None,
+                policies: vec![],
+                kill_switch: false,
+                connections: vec![],
+            };
+            let (_stop, watch) = UnixStream::pair().unwrap();
+            assert_eq!(
+                controller
+                    .run(&request, &watch, -1, |_| panic!("No authorization"))
+                    .unwrap_err(),
+                AUTHORIZATION_DENIED
+            );
+            assert!(controller.authorization_denied());
+            for _ in 0..3 {
+                assert_eq!(
+                    controller
+                        .run(&request, &watch, -1, |_| panic!("No retry"))
+                        .unwrap_err(),
+                    AUTHORIZATION_DENIED
+                );
+            }
+            controller.allow_authorization();
+            assert!(!controller.authorization_denied());
+        }
+    }
+    #[test]
     fn reconnect_preserves_guard_but_explicit_stop_releases_it() {
         let code = "import sys,json\ni=0\nfor line in sys.stdin:\n c=json.loads(line)\n if c['command']=='start': print('READY',flush=True)\n else:\n  assert c['preserve_protection']==(i==0),c\n  i+=1\n  print('STOPPED',flush=True)\n";
         let child = Command::new("python3")
@@ -487,6 +579,7 @@ mod tests {
             .unwrap();
         let controller = Controller {
             helper: Mutex::new(Some(Helper::from_child(child).unwrap())),
+            ..Default::default()
         };
         let request = ConnectRequest {
             ru_preset: None,
@@ -521,6 +614,7 @@ mod tests {
         let helper = Helper::from_child(child).unwrap();
         let controller = Controller {
             helper: Mutex::new(Some(helper)),
+            ..Default::default()
         };
         let req = ConnectRequest {
             ru_preset: None,

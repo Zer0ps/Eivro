@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Synthetic DNS-to-IP review. Every interface/route exists only inside unshare -Urn."""
 
-import json, os, socket, struct, subprocess, sys, threading, time
+import json, os, signal, socket, struct, subprocess, sys, threading, time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,7 +37,7 @@ def stop(p):
         p.wait(timeout=3)
 
 
-def server():
+def server(vpn_servers=False):
     input()
     run("ip", "link", "set", "lo", "up")
     for ip in (
@@ -46,6 +46,8 @@ def server():
         "198.51.100.98",
         "198.51.100.97",
         "198.51.100.96",
+        "198.51.100.95",
+        "198.51.100.94",
         "5.45.192.1",
         "5.45.193.1",
         "2.56.24.1",
@@ -120,6 +122,11 @@ def server():
 
     def handle(s, proxy):
         try:
+            if s.getsockname()[1] == 18083:
+                s.settimeout(60)
+                while packet := s.recv(4096):
+                    s.sendall(packet)
+                return
             s.settimeout(5)
             if proxy:
                 h = exact(s, 2)
@@ -151,11 +158,12 @@ def server():
                     return
                 s.sendall(b"\5\0\0\1\0\0\0\0\0\0")
             s.recv(4096)
-            s.sendall(
-                b"PROXY"
-                if proxy
-                else b"UPDATED" if s.getsockname()[0] == "198.51.100.96" else b"DIRECT"
-            )
+            direct_reply = {
+                "198.51.100.96": b"UPDATED",
+                "198.51.100.95": b"SERVER-A",
+                "198.51.100.94": b"SERVER-B",
+            }.get(s.getsockname()[0], b"DIRECT")
+            s.sendall(b"PROXY" if proxy else direct_reply)
         finally:
             s.close()
 
@@ -179,17 +187,85 @@ def server():
 
     for port, label in ((53, "exception-dns"), (5353, "default-dns")):
         threading.Thread(target=dns, args=(port, label), daemon=True).start()
-    for addr, port, proxy in (("0.0.0.0", 18080, False), ("10.50.0.53", 19081, True)):
+    for addr, port, proxy in (
+        ("0.0.0.0", 18080, False),
+        ("0.0.0.0", 18083, False),
+        ("10.50.0.53", 19081, True),
+    ):
         threading.Thread(target=tcp, args=(addr, port, proxy), daemon=True).start()
-    print("ready", flush=True)
-    for line in sys.stdin:
-        if line.strip() == "stats":
-            print(json.dumps(queries), flush=True)
-        elif line.strip() == "rotate":
-            rotated = True
-            print("rotated", flush=True)
-        else:
-            break
+    cores = []
+    try:
+        if vpn_servers:
+
+            def terminate(*_):
+                raise SystemExit()
+
+            signal.signal(signal.SIGTERM, terminate)
+            for port, address in [(19991, "198.51.100.95"), (19992, "198.51.100.94")]:
+                config = {
+                    "log": {"disabled": True},
+                    "inbounds": [
+                        {
+                            "type": "shadowsocks",
+                            "listen": "10.50.0.53",
+                            "listen_port": port,
+                            "method": "chacha20-ietf-poly1305",
+                            "password": "synthetic",
+                        }
+                    ],
+                    "outbounds": [
+                        {"type": "direct", "tag": "direct", "domain_resolver": "hosts"}
+                    ],
+                    "dns": {
+                        "servers": [
+                            {
+                                "type": "hosts",
+                                "tag": "hosts",
+                                "predefined": {
+                                    "vpn-switch.test": address,
+                                    "selected.company.test": address,
+                                    "other.company.test": address,
+                                },
+                            }
+                        ],
+                        "final": "hosts",
+                    },
+                    "route": {"default_domain_resolver": "hosts", "final": "direct"},
+                }
+                core = subprocess.Popen(
+                    [str(ROOT / "vendor/sing-box"), "run", "-c", "/dev/stdin"],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    env={"PATH": "/usr/bin:/bin", "HOME": "/nonexistent"},
+                )
+                cores.append(core)
+                core.stdin.write(json.dumps(config).encode())
+                core.stdin.close()
+                deadline = time.monotonic() + 5
+                while True:
+                    if core.poll() is not None:
+                        raise RuntimeError("Synthetic VPN server exited")
+                    try:
+                        with socket.create_connection(
+                            ("10.50.0.53", port), timeout=0.1
+                        ):
+                            break
+                    except OSError:
+                        assert time.monotonic() < deadline
+                        time.sleep(0.02)
+        print("ready", flush=True)
+        for line in sys.stdin:
+            if line.strip() == "stats":
+                print(json.dumps(queries), flush=True)
+            elif line.strip() == "rotate":
+                rotated = True
+                print("rotated", flush=True)
+            else:
+                break
+    finally:
+        for core in cores:
+            stop(core)
 
 
 def lab(original, policy):

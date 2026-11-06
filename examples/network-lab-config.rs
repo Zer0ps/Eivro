@@ -19,6 +19,8 @@ fn main() {
         }],
         kill_switch: false,
         connections: vec![Connection {
+            #[cfg(target_os = "linux")]
+            gateway: None,
             id: 1,
             name: "Synthetic work".into(),
             interface: "work0".into(),

@@ -25,6 +25,10 @@ pub struct Connection {
     pub name: String,
     pub interface: String,
     pub dns: Dns,
+    /// The transport server of another VPN, not a destination behind that VPN.
+    #[cfg(target_os = "linux")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -72,6 +76,10 @@ pub fn validate(connections: &[Connection]) -> Result<()> {
             return Err("Задайте уникальное название выхода: до 40 символов.".into());
         }
         validate_interface(&connection.interface)?;
+        #[cfg(target_os = "linux")]
+        if let Some(gateway) = &connection.gateway {
+            crate::domain_dns::gateways::validate(gateway)?;
+        }
         if let Dns::Manual(servers) = &connection.dns {
             if servers.len() != 1 {
                 return Err("Укажите один IP-адрес DNS.".into());

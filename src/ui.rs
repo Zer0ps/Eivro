@@ -387,6 +387,14 @@ impl App {
                     Event::Failed(e) => {
                         done = true;
                         self.error = Some(e.clone());
+                        #[cfg(target_os = "linux")]
+                        if self.tun.authorization_denied() || e == eivro::tun::AUTHORIZATION_DENIED
+                        {
+                            self.want_connected = false;
+                            self.recovery.cancel();
+                            self.error = None;
+                            continue;
+                        }
                         let was_connected =
                             self.running || self.recovery.recovering || self.guard_session;
                         let protected =
@@ -529,6 +537,14 @@ impl App {
         }
     }
     fn reconfigure(&mut self) {
+        #[cfg(target_os = "linux")]
+        if self.want_connected
+            && self.settings.mode == Mode::Tun
+            && let Err(error) = eivro::domain_dns::check_ranges()
+        {
+            self.error = Some(format!("{error} Переподключение не выполнено."));
+            return;
+        }
         if self.want_connected
             && let Some(session) = &mut self.session
         {
@@ -560,6 +576,8 @@ impl App {
                 self.error = Some(e);
             }
         } else {
+            #[cfg(target_os = "linux")]
+            self.tun.allow_authorization();
             self.want_connected = true;
             self.start_connection(ctx);
         }
@@ -594,21 +612,7 @@ impl App {
             }
             return;
         };
-        let req = ConnectRequest {
-            ru_preset: self.settings.routing_profiles[self.settings.selected_routing]
-                .ru_preset
-                .clone(),
-            connections: self.settings.connections.clone(),
-            probe_port: None,
-            kill_switch: self.settings.kill_switch && self.settings.mode == Mode::Tun,
-            policies: self.settings.routing_profiles[self.settings.selected_routing]
-                .rules
-                .clone(),
-            bridge_port: None,
-            uri: profile.uri.clone(),
-            bypass: vec![],
-            port: self.settings.port,
-        };
+        let req = self.connection_request(profile.uri.clone());
         let ctx = ctx.clone();
         match Session::start_with_controller(
             req,
@@ -634,6 +638,66 @@ impl App {
             }
         }
     }
+    fn connection_request(&self, uri: String) -> ConnectRequest {
+        ConnectRequest {
+            ru_preset: self.settings.routing_profiles[self.settings.selected_routing]
+                .ru_preset
+                .clone(),
+            connections: self.settings.connections.clone(),
+            probe_port: None,
+            kill_switch: self.settings.kill_switch && self.settings.mode == Mode::Tun,
+            policies: self.settings.routing_profiles[self.settings.selected_routing]
+                .rules
+                .clone(),
+            bridge_port: None,
+            uri,
+            bypass: vec![],
+            port: self.settings.port,
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn network_settings_changed(old: &Settings, next: &Settings) -> bool {
+    let old_profile = old.routing_profiles.get(old.selected_routing);
+    let next_profile = next.routing_profiles.get(next.selected_routing);
+    if old.mode != next.mode
+        || old.port != next.port
+        || old.kill_switch != next.kill_switch
+        || old.selected_profile().map(|p| &p.uri) != next.selected_profile().map(|p| &p.uri)
+        || old_profile.map(|p| (&p.rules, &p.ru_preset))
+            != next_profile.map(|p| (&p.rules, &p.ru_preset))
+    {
+        return true;
+    }
+    let used = |id| {
+        next_profile.is_some_and(|p| {
+            p.rules
+                .iter()
+                .any(|r| r.enabled && r.action == eivro::policy::Action::Connection(id))
+        })
+    };
+    if old.connections.iter().filter(|c| used(c.id)).any(|c| {
+        next.connections
+            .iter()
+            .find(|n| n.id == c.id)
+            .is_none_or(|n| c.interface != n.interface || c.dns != n.dns)
+    }) || next
+        .connections
+        .iter()
+        .filter(|c| used(c.id))
+        .any(|c| !old.connections.iter().any(|o| o.id == c.id))
+    {
+        return true;
+    }
+    let gateways = |s: &Settings| {
+        s.connections
+            .iter()
+            .filter_map(|c| c.gateway.as_deref())
+            .map(str::to_owned)
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    gateways(old) != gateways(next)
 }
 
 fn contrast(c: Color32) -> Color32 {
@@ -980,6 +1044,59 @@ mod tests {
             }
             std::fs::remove_dir_all(dir).unwrap();
         }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn connection_request_contains_only_the_selected_profile_and_preset() {
+        use eivro::{
+            network::{Connection, Dns},
+            policy::{Action, RoutingProfile},
+        };
+        let mut app = model();
+        app.settings.connections = vec![Connection {
+            gateway: None,
+            id: 1,
+            name: "Unused exit".into(),
+            interface: "work0".into(),
+            dns: Dns::Manual(vec!["10.50.0.53".parse().unwrap()]),
+        }];
+        app.settings.routing_profiles[0]
+            .add_addresses("old-only.test", Action::Direct)
+            .unwrap();
+        let mut second = RoutingProfile {
+            name: "Second".into(),
+            ..Default::default()
+        };
+        second
+            .add_addresses("new-only.test", Action::Direct)
+            .unwrap();
+        app.settings.routing_profiles.push(second);
+        let uri = app.settings.selected_profile().unwrap().uri.clone();
+        for (selected, present, absent) in [
+            (0, "old-only.test", "new-only.test"),
+            (3, "new-only.test", "old-only.test"),
+            (0, "old-only.test", "new-only.test"),
+        ] {
+            app.settings.selected_routing = selected;
+            let req = app.connection_request(uri.clone());
+            assert_eq!(req.policies.len(), 1);
+            assert_eq!(req.policies[0].target.value(), present);
+            assert!(req.ru_preset.is_none() && req.bypass.is_empty());
+            let config = eivro::config::generate(&req, Mode::Local)
+                .unwrap()
+                .to_string();
+            assert!(config.contains(present));
+            assert!(
+                !config.contains(absent)
+                    && !config.contains("network-1")
+                    && !config.contains("ru-direct")
+            );
+        }
+        app.settings.selected_routing = 1;
+        assert!(app.connection_request(uri.clone()).ru_preset.is_some());
+        app.settings.selected_routing = 0;
+        assert!(app.connection_request(uri).ru_preset.is_none());
     }
     #[test]
     fn subscription_refresh_errors_preserve_settings_and_schedule_retry() {

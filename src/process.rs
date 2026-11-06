@@ -342,21 +342,17 @@ fn pin_xray_uplink(
     host: &str,
     watch: Option<&UnixStream>,
 ) -> Result<()> {
-    let addresses =
-        crate::resolver::resolve_host(host, 443, Instant::now() + Duration::from_secs(10), watch)
-            .map_err(|e| match e.kind() {
-            std::io::ErrorKind::Interrupted => "Подключение отменено.",
-            std::io::ErrorKind::TimedOut => {
-                "Истекло время DNS-запроса сервера Xray. Проверьте DNS и сеть."
-            }
-            _ => "Не удалось разрешить адрес сервера Xray.",
-        })?;
+    let addresses = crate::domain_dns::gateways::resolve_transport(
+        host,
+        Instant::now() + Duration::from_secs(10),
+        watch,
+    )?;
     let ip = addresses
         .iter()
         .find(|a| a.is_ipv4())
         .or_else(|| addresses.first())
-        .ok_or("У сервера нет IP-адреса.")?
-        .ip();
+        .copied()
+        .ok_or("У сервера нет IP-адреса.")?;
     // Local endpoints belong to the local routing table, regardless of uplink.
     if ip.is_loopback() {
         return Ok(());

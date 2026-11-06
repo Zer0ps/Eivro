@@ -85,7 +85,7 @@ fn metadata_cannot_introduce_commands_or_unbounded_refresh() {
 fn old_settings_keep_all_servers_selection_and_rules() {
     let mut settings:Settings=serde_json::from_value(json!({"schema":1,"profiles":[profile("A",443),profile("B",444)],"selected":1,"bypass":["*.example.test"],"mode":"tun","accent":[0,0,0]})).unwrap();
     settings.migrate().unwrap();
-    assert_eq!(settings.schema, 5);
+    assert_eq!(settings.schema, eivro::storage::SCHEMA);
     assert_eq!(settings.subscriptions.len(), 1);
     assert_eq!(settings.selected_profile().unwrap().name, "B");
     assert!(settings.bypass.is_empty());

@@ -48,6 +48,10 @@ pub fn generate_with_network(
         return Err("Kill switch пока доступен только в Linux.".into());
     }
     crate::network::validate(&req.connections)?;
+    #[cfg(target_os = "linux")]
+    if req.kill_switch && req.connections.iter().any(|c| c.gateway.is_some()) {
+        return Err("Kill switch несовместим с обходом TUN для сервера другого VPN.".into());
+    }
     if let Some(preset) = &req.ru_preset {
         preset.validate()?;
     }

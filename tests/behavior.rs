@@ -219,7 +219,7 @@ fn settings_are_private_atomic_and_do_not_follow_symlinks() {
         0o700
     );
     let loaded = storage::load(&path).unwrap();
-    assert_eq!(loaded.schema, 5);
+    assert_eq!(loaded.schema, eivro::storage::SCHEMA);
     fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
     assert!(storage::load(&path).is_err());
     fs::remove_file(&path).unwrap();

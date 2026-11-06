@@ -53,7 +53,7 @@ def send(child, value, expected):
     assert actual == expected, (expected, actual)
 
 
-def dns(domain):
+def dns(domain, resolver="192.0.2.53"):
     query = (
         struct.pack("!HHHHHH", 1234, 256, 1, 0, 0, 0)
         + lab.name(domain)
@@ -61,7 +61,7 @@ def dns(domain):
     )
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
         s.settimeout(4)
-        s.sendto(query, ("192.0.2.53", 53))
+        s.sendto(query, (resolver, 53))
         answer = s.recv(4096)
     assert answer[3] & 15 == 0 and struct.unpack("!H", answer[6:8])[0] > 0
     return socket.inet_ntoa(answer[-4:])
@@ -82,6 +82,25 @@ def wait_gone():
         if time.monotonic() > deadline:
             raise RuntimeError("TUN not removed")
         time.sleep(0.05)
+
+
+def network_snapshot():
+    return [
+        sorted(
+            json.dumps(entry, sort_keys=True)
+            for entry in json.loads(lab.run("ip", family, "-j", *args).stdout)
+        )
+        for family in ["-4", "-6"]
+        for args in [("route", "show", "table", "all"), ("rule", "show")]
+    ]
+
+
+def assert_network_restored(baseline):
+    current = network_snapshot()
+    assert current == baseline, {
+        "added": [sorted(set(now) - set(old)) for old, now in zip(baseline, current)],
+        "removed": [sorted(set(old) - set(now)) for old, now in zip(baseline, current)],
+    }
 
 
 def test(original_net, original_mount):
@@ -120,6 +139,8 @@ def test(original_net, original_mount):
             )
             lab.run("ip", "link", "set", "work-peer", "netns", str(server.pid))
             lab.run("ip", "addr", "add", "10.50.0.1/24", "dev", "work0")
+            lab.run("ip", "link", "set", "dev", "work0", "addrgenmode", "none")
+            lab.run("ip", "-6", "addr", "add", "fe80::1/64", "dev", "work0", "nodad")
             lab.run("ip", "link", "set", "work0", "up")
             lab.run(
                 "ip", "route", "add", "default", "via", "10.50.0.53", "dev", "work0"
@@ -133,7 +154,10 @@ def test(original_net, original_mount):
             copy_binary(Path(shutil.which("ip")), "/usr/bin/ip", root)
             copy_binary(Path(shutil.which("sh")), "/bin/sh", root)
             (root / "etc").mkdir()
-            (root / "etc/hosts").write_text("10.50.0.53 vpn-endpoint.test\n")
+            (root / "etc/hosts").write_text(
+                # Simulate a FakeIP left in the system resolver cache.
+                "198.18.0.78 vpn-endpoint.test\n198.18.0.77 gateway.vpn.test\n"
+            )
             (root / "etc/nsswitch.conf").write_text("hosts: files\n")
             for path in ["run", "proc", "sys", "dev/net"]:
                 (root / path).mkdir(parents=True, exist_ok=True)
@@ -151,7 +175,11 @@ def test(original_net, original_mount):
             (root / "run/systemd/resolve/io.systemd.Resolve").touch()
             resolver = root / "usr/bin/resolvectl"
             resolver.write_text(
-                '#!/bin/sh\nif [ "$1" = flush-caches ]; then printf \'%s\\n\' "$PPID" >> /run/flush-count; else printf "[]"; fi\n'
+                '#!/bin/sh\ncase "$1" in\n'
+                'flush-caches) printf \'%s\\n\' "$PPID" >> /run/flush-count ;;\n'
+                '--cache=no) if [ "$6" = gateway.vpn.test ]; then printf \'%s\\n\' query >> /run/gateway-queries; addr="198,51,100,99"; else addr="10,50,0,53"; fi; '
+                'if [ "$4" = --type=A ]; then printf \'{"key":{"class":1,"type":1},"address":[%s]}\\n\' "$addr"; fi ;;\n'
+                '*) printf "[]" ;;\nesac\n'
             )
             resolver.chmod(0o755)
 
@@ -182,7 +210,7 @@ def test(original_net, original_mount):
                 mounts.append(target)
             (root / "dev/stdin").symlink_to("/proc/self/fd/0")
             request = {
-                "uri": "ss://chacha20-ietf-poly1305:synthetic@vpn-endpoint.test:19999",
+                "uri": "ss://chacha20-ietf-poly1305:synthetic@vpn-endpoint.test:19991",
                 "bypass": [],
                 "port": 12080,
                 "bridge_port": None,
@@ -215,25 +243,136 @@ def test(original_net, original_mount):
                 )
 
             helper = start_helper()
+            assert dns("plain.company.test", "10.50.0.53") == "198.51.100.99"
+            baseline_network = network_snapshot()
             send(helper, {"command": "start", "request": request}, "READY")
             assert flushes() == 1, ("startup flush count", flushes())
             original = dns("plain.company.test")
             tcp(original)
+            # Reproduce vpnc-script's host route when its VPNGATEWAY was FakeIP.
+            fake_gateway = dns("gateway.vpn.test")
+            lab.run(
+                "ip",
+                "route",
+                "add",
+                fake_gateway + "/32",
+                "via",
+                "10.50.0.53",
+                "dev",
+                "work0",
+            )
+            children_path = Path(f"/proc/{helper.pid}/task/{helper.pid}/children")
+            before_children = children_path.read_text()
+            helper.stdin.write(
+                json.dumps({"command": "start", "request": request}).encode() + b"\n"
+            )
+            helper.stdin.flush()
+            error = reply(helper)
+            assert (
+                error.startswith("START_ERROR ")
+                and fake_gateway in error
+                and "work0" in error
+            ), error
+            assert (
+                children_path.read_text() == before_children
+            ), "Conflict stopped a working core"
+            tcp(original)
+            lab.run(
+                "ip",
+                "route",
+                "del",
+                fake_gateway + "/32",
+                "via",
+                "10.50.0.53",
+                "dev",
+                "work0",
+            )
+            print(
+                "FakeIP gateway host route reproduced; conflict leaves current core alive",
+                flush=True,
+            )
+            request["connections"][0]["gateway"] = "gateway.vpn.test"
+            send(helper, {"command": "start", "request": request}, "READY")
+            assert dns("gateway.vpn.test") == "198.51.100.99"
+            assert (root / "run/gateway-queries").read_text().count("query") == 2
+            route = json.loads(
+                lab.run("ip", "-j", "route", "get", "198.51.100.99").stdout
+            )[0]
+            assert route["dev"] == "work0", route
+            # External VPN starts after Eivro and pins a real, independent endpoint.
+            lab.run(
+                "ip",
+                "route",
+                "add",
+                "198.51.100.99/32",
+                "via",
+                "10.50.0.53",
+                "dev",
+                "work0",
+            )
+            with socket.create_connection(
+                ("198.51.100.99", 18083), timeout=3
+            ) as transport:
+                transport.sendall(b"before-policy-edit")
+                assert transport.recv(64) == b"before-policy-edit"
+                for enabled in [False, True]:
+                    request["policies"][0]["enabled"] = enabled
+                    send(helper, {"command": "start", "request": request}, "READY")
+                    transport.sendall(b"after-policy-edit")
+                    assert (
+                        transport.recv(64) == b"after-policy-edit"
+                    ), "External VPN depends on the Eivro core"
+                    assert dns("gateway.vpn.test") == "198.51.100.99"
+                    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
+                        udp.settimeout(3)
+                        udp.sendto(b"external-vpn-datagram", ("198.51.100.99", 18082))
+                        assert udp.recv(64) == b"DIRECT"
+            assert (root / "run/gateway-queries").read_text().count("query") == 2, "Policy changes must keep a connected VPN's endpoint pin"
+            lab.run(
+                "ip",
+                "route",
+                "del",
+                "198.51.100.99/32",
+                "via",
+                "10.50.0.53",
+                "dev",
+                "work0",
+            )
+            print(
+                "Real gateway bypass: both startup orders, TCP survives rule edits, UDP remains direct",
+                flush=True,
+            )
+            vpn_address = dns("vpn-switch.test")
+            tcp(vpn_address, b"SERVER-A")
+            before = flushes()
             send(
                 helper,
                 {"command": "stop", "preserve_protection": False, "preserve_dns": True},
                 "STOPPED",
             )
-            assert flushes() == 1, "Reconnect cleared DNS while the tunnel was down"
+            assert (
+                flushes() == before
+            ), "Reconnect cleared DNS while the tunnel was down"
             wait_gone()
+            assert_network_restored(baseline_network)
+            assert dns("plain.company.test", "10.50.0.53") == "198.51.100.99"
             server.stdin.write("rotate\n")
             server.stdin.flush()
             assert server.stdout.readline().strip() == "rotated"
+            request["uri"] = (
+                "ss://chacha20-ietf-poly1305:synthetic@vpn-endpoint.test:19992"
+            )
             send(helper, {"command": "start", "request": request}, "READY")
             assert dns("plain.company.test") == original
             tcp(original, b"UPDATED")
+            assert dns("vpn-switch.test") == vpn_address
+            tcp(vpn_address, b"SERVER-B")
+            print(
+                "VPN endpoint switch: same FakeIP reaches server B; work DNS/exit still works",
+                flush=True,
+            )
             print("Helper reconnect: same FakeIP, new real DNS destination", flush=True)
-            assert flushes() == 2
+            assert flushes() == before + 1
             children = (
                 Path(f"/proc/{helper.pid}/task/{helper.pid}/children")
                 .read_text()
@@ -261,6 +400,34 @@ def test(original_net, original_mount):
             tcp(original, b"UPDATED")
             assert dns("plain.company.test") == original
             print("Helper crash: RAM state survives and old IP still works", flush=True)
+            saved_policies = request["policies"]
+            profile_addresses = {
+                domain: dns(domain)
+                for domain in ["selected.company.test", "other.company.test"]
+            }
+            for selected in [
+                "selected.company.test",
+                "other.company.test",
+                "selected.company.test",
+            ]:
+                request["policies"] = [
+                    {
+                        "enabled": True,
+                        "target": {"kind": "address", "value": selected},
+                        "action": {"connection": 1},
+                    }
+                ]
+                send(helper, {"command": "start", "request": request}, "READY")
+                for domain, address in profile_addresses.items():
+                    assert dns(domain) == address
+                    tcp(address, b"DIRECT" if domain == selected else b"SERVER-B")
+            request["policies"] = saved_policies
+            send(helper, {"command": "start", "request": request}, "READY")
+            tcp(original, b"UPDATED")
+            print(
+                "Profiles A -> B -> A: only current rules affect retained FakeIPs; no accumulation",
+                flush=True,
+            )
             before = flushes()
             send(helper, {"command": "retire"}, "RETIRED")
             wait_gone()
@@ -293,6 +460,12 @@ def test(original_net, original_mount):
             send(helper, {"command": "stop", "preserve_protection": False}, "STOPPED")
             wait_gone()
             assert flushes() == before + 1, "Disconnect did not invalidate system DNS"
+            assert_network_restored(baseline_network)
+            assert dns("plain.company.test", "10.50.0.53") == "198.51.100.96"
+            print(
+                "Disconnect restores ordinary DNS answers and exact IPv4/IPv6 routes/rules",
+                flush=True,
+            )
             before = flushes()
             lab.run(
                 "ip",
@@ -358,7 +531,7 @@ def test(original_net, original_mount):
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "server":
-        lab.server()
+        lab.server(vpn_servers=True)
     elif len(sys.argv) > 1 and sys.argv[1] == "lab":
         test(sys.argv[2], sys.argv[3])
     else:
