@@ -60,7 +60,9 @@ firewall также ограничивает транспорт второго V
 `./scripts/check.sh` включает проверку конфигов настоящим sing-box и лабораторию
 `tests/network_lab.py`: два одноразовых network namespace, интерфейс рабочего VPN,
 DNS и HTTPS с проверкой сертификата. Проверяются доступный выход и отказ без новых
-DNS-запросов. Реальные настройки, маршруты и DNS хоста лаборатория не меняет.
+DNS-запросов. Все сетевые лаборатории запускаются через `tests/isolated_linux.py`,
+который дополнительно закрывает runtime-сокеты хоста приватным `/run`: одного
+network namespace недостаточно для изоляции D-Bus/systemd-resolved.
 Для ручного запуска: `cargo build --locked --example network-lab-config`, затем
 `python3 tests/network_lab.py`. Нужны Linux, разрешённые user namespaces, iproute2,
 OpenSSL и curl.

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Synthetic DNS-to-IP review. Every interface/route exists only inside unshare -Urn."""
+"""Synthetic DNS-to-IP review with private network, mounts, PIDs and /run."""
+
+import isolated_linux
 
 import json, os, signal, socket, struct, subprocess, sys, threading, time
 from pathlib import Path
@@ -269,6 +271,7 @@ def server(vpn_servers=False):
 
 
 def lab(original, policy):
+    isolated_linux.require_runtime_isolation()
     proxy_mode = policy.endswith("-proxy")
     base_policy = policy.removesuffix("-proxy")
     assert os.readlink("/proc/self/ns/net") != original
@@ -574,17 +577,6 @@ if __name__ == "__main__":
             "preset-services-proxy",
             "preset-all-proxy",
         ):
-            subprocess.run(
-                [
-                    "unshare",
-                    "--user",
-                    "--map-root-user",
-                    "--net",
-                    sys.executable,
-                    __file__,
-                    "lab",
-                    os.readlink("/proc/self/ns/net"),
-                    mode,
-                ],
-                check=True,
+            isolated_linux.launch(
+                __file__, "lab", os.readlink("/proc/self/ns/net"), mode
             )

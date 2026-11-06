@@ -9,6 +9,7 @@ for directory in ("scripts", "tests"):
         compile(path.read_text(), str(path), "exec")
 PY
 cargo fmt --all --check
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_lab_isolation.py' -v
 python3 scripts/update-ru-presets.py --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked

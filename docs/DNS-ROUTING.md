@@ -80,8 +80,10 @@ Linux x86_64 использует `sing-box 1.14.4-eivro.2`, собранный 
 официального commit с [локальным патчем](../patches/sing-box/README.md).
 Это изменённая сборка Eivro, не официальный готовый бинарник SagerNet.
 
-Лабораторные тесты создают отдельные user/network namespaces; тест помощника также
-использует mount/PID namespaces и временный chroot. Маршруты хоста не изменяются.
+Лабораторные тесты создают отдельные user/network/mount/PID namespaces и приватный
+`/run` без сокетов служб хоста. Один network namespace не изолирует D-Bus и
+systemd-resolved. Тест помощника дополнительно использует временный chroot.
+Запускайте тесты через их обычную точку входа, без ручного вызова режима `lab`.
 
 ```sh
 python3 scripts/build-core.py --output vendor/sing-box

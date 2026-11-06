@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Opt-in real-core lab. Automatically runs inside a fresh unshare -Urn namespace.
+"""Opt-in real-core lab. Uses private network/mount/PID namespaces and /run.
 Creates veth devices exclusively in disposable namespaces; never edits the host.
 No real credentials or external network access. Requires ip, openssl, curl.
 """
@@ -15,6 +15,7 @@ import sys
 import tempfile
 import threading
 import time
+import isolated_linux
 ROOT = Path(__file__).resolve().parents[1]
 
 def run(*args, **kw):
@@ -72,6 +73,7 @@ def server(cert, key):
             break
 
 def lab(original_namespace):
+    isolated_linux.require_runtime_isolation()
     if os.readlink('/proc/self/ns/net') == original_namespace:
         raise SystemExit('Use unshare --user --map-root-user --net python3 tests/network_lab.py')
     run('ip', 'link', 'set', 'lo', 'up')
@@ -141,4 +143,4 @@ if __name__ == '__main__':
     elif len(sys.argv) > 1 and sys.argv[1] == 'lab':
         lab(sys.argv[2])
     else:
-        subprocess.run(['unshare', '--user', '--map-root-user', '--net', sys.executable, __file__, 'lab', os.readlink('/proc/self/ns/net')], check=True)
+        isolated_linux.launch(__file__, 'lab', os.readlink('/proc/self/ns/net'))

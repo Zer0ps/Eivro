@@ -15,6 +15,7 @@ import sys
 import tempfile
 import time
 import domain_dns_lab as lab
+import isolated_linux
 
 ROOT = Path(__file__).resolve().parents[1]
 BIN = Path(os.environ.get("EIVRO_TEST_BIN_DIR", ROOT / "target/debug"))
@@ -104,6 +105,7 @@ def assert_network_restored(baseline):
 
 
 def test(original_net, original_mount):
+    isolated_linux.require_runtime_isolation()
     assert os.readlink("/proc/self/ns/net") != original_net
     assert os.readlink("/proc/self/ns/mnt") != original_mount
     assert os.geteuid() == 0
@@ -176,7 +178,7 @@ def test(original_net, original_mount):
             resolver = root / "usr/bin/resolvectl"
             resolver.write_text(
                 '#!/bin/sh\ncase "$1" in\n'
-                'flush-caches) printf \'%s\\n\' "$PPID" >> /run/flush-count ;;\n'
+                "flush-caches) printf '%s\\n' \"$PPID\" >> /run/flush-count ;;\n"
                 '--cache=no) if [ "$6" = gateway.vpn.test ]; then printf \'%s\\n\' query >> /run/gateway-queries; addr="198,51,100,99"; else addr="10,50,0,53"; fi; '
                 'if [ "$4" = --type=A ]; then printf \'{"key":{"class":1,"type":1},"address":[%s]}\\n\' "$addr"; fi ;;\n'
                 '*) printf "[]" ;;\nesac\n'
@@ -327,7 +329,9 @@ def test(original_net, original_mount):
                         udp.settimeout(3)
                         udp.sendto(b"external-vpn-datagram", ("198.51.100.99", 18082))
                         assert udp.recv(64) == b"DIRECT"
-            assert (root / "run/gateway-queries").read_text().count("query") == 2, "Policy changes must keep a connected VPN's endpoint pin"
+            assert (root / "run/gateway-queries").read_text().count(
+                "query"
+            ) == 2, "Policy changes must keep a connected VPN's endpoint pin"
             lab.run(
                 "ip",
                 "route",
@@ -535,21 +539,9 @@ if __name__ == "__main__":
     elif len(sys.argv) > 1 and sys.argv[1] == "lab":
         test(sys.argv[2], sys.argv[3])
     else:
-        subprocess.run(
-            [
-                "unshare",
-                "--user",
-                "--map-root-user",
-                "--net",
-                "--mount",
-                "--pid",
-                "--fork",
-                "--mount-proc",
-                sys.executable,
-                __file__,
-                "lab",
-                os.readlink("/proc/self/ns/net"),
-                os.readlink("/proc/self/ns/mnt"),
-            ],
-            check=True,
+        isolated_linux.launch(
+            __file__,
+            "lab",
+            os.readlink("/proc/self/ns/net"),
+            os.readlink("/proc/self/ns/mnt"),
         )
