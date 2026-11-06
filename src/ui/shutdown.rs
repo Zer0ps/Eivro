@@ -5,6 +5,8 @@ impl App {
         if self.quitting {
             return;
         }
+        #[cfg(target_os = "linux")]
+        self.diagnostics.invalidate_and_cancel();
         self.quitting = true;
         self.want_connected = false;
         self.reconnect_pending = false;
@@ -65,6 +67,7 @@ impl App {
 
     #[cfg(target_os = "linux")]
     fn finish_quit(&mut self, ctx: &egui::Context) {
+        self.diagnostics.invalidate_and_cancel();
         self.quitting = true;
         self.exit_ready = true;
         self.exit_error = None;

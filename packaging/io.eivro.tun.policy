@@ -3,10 +3,10 @@
 <policyconfig>
   <vendor>Eivro</vendor>
   <action id="io.eivro.tun">
-    <description>Start the Eivro system tunnel</description>
-    <description xml:lang="ru">Запустить системный туннель Eivro</description>
-    <message>Authentication is required to route network traffic through Eivro.</message>
-    <message xml:lang="ru">Подтвердите права для маршрутизации трафика через Eivro.</message>
+    <description>Manage Eivro network settings</description>
+    <description xml:lang="ru">Управление сетевыми настройками Eivro</description>
+    <message>Authentication is required to start Eivro TUN or apply the selected DNS repair.</message>
+    <message xml:lang="ru">Подтвердите запуск TUN или выбранное исправление DNS в Eivro.</message>
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>no</allow_inactive>

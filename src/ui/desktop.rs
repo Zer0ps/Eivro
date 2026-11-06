@@ -40,6 +40,8 @@ impl App {
                     }
                 }
                 DesktopEvent::Network(online) => {
+                    #[cfg(target_os = "linux")]
+                    self.diagnostics.invalidate();
                     #[cfg(any(target_os = "macos", windows))]
                     self.schedule_network_scan(ctx);
                     self.recovery.offline = !online;
@@ -50,6 +52,8 @@ impl App {
                     }
                 }
                 DesktopEvent::Sleep(sleeping) => {
+                    #[cfg(target_os = "linux")]
+                    self.diagnostics.invalidate();
                     self.recovery.sleeping = sleeping;
                     if self.want_connected && self.settings.reconnect {
                         self.network_reconnect();

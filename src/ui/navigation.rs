@@ -2,7 +2,7 @@ use super::design::{ButtonTone, command, heading, icon, mix};
 use super::*;
 
 impl App {
-    fn navigate(&mut self, page: Page, ctx: &egui::Context) {
+    pub(super) fn navigate(&mut self, page: Page, ctx: &egui::Context) {
         self.page = page;
         self.navigation_overlay = false;
         if page == Page::Routes {
@@ -17,6 +17,8 @@ impl App {
             (Page::Connection, "Соединение"),
             (Page::Subscriptions, "Подписки"),
             (Page::Routes, "Маршруты"),
+            #[cfg(target_os = "linux")]
+            (Page::Diagnostics, "Диагностика"),
             (Page::Settings, "Настройки"),
         ] {
             let selected = page == self.page;
@@ -228,6 +230,8 @@ impl App {
                     Page::Routes => 1020.0,
                     Page::Subscriptions => 900.0,
                     Page::Settings => 760.0,
+                    #[cfg(target_os = "linux")]
+                    Page::Diagnostics => 900.0,
                 };
                 let width = ui.available_width().min(limit);
                 let left = ((ui.available_width() - width) * 0.5).max(0.0);
@@ -262,6 +266,8 @@ impl App {
                     Page::Subscriptions => self.subscriptions_page(&mut content, ctx, p),
                     Page::Routes => self.routes_page(&mut content, ctx, p),
                     Page::Settings => self.settings_page(&mut content, ctx, p),
+                    #[cfg(target_os = "linux")]
+                    Page::Diagnostics => self.diagnostics_page(&mut content, ctx, p),
                 }
             });
         if narrow && self.navigation_overlay {

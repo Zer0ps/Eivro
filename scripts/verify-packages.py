@@ -62,6 +62,7 @@ with tarfile.open(fileobj=io.BytesIO(run(['ar', 'p', deb, 'data.tar.gz']))) as a
     ET.fromstring(archive.extractfile('usr/share/polkit-1/actions/io.eivro.tun.policy').read())
     assert archive.getmember('usr/share/licenses/eivro/NotoEmoji.LICENSE').isfile()
     assert archive.getmember('usr/share/licenses/eivro/Inter.LICENSE').isfile()
+    assert archive.extractfile('usr/share/doc/eivro/docs/DIAGNOSTICS.md').read() == (ROOT/'docs/DIAGNOSTICS.md').read_bytes()
     assert archive.extractfile('usr/share/licenses/eivro/ru-direct.LICENSE').read() == (ROOT/'assets/rules/ru-direct/LICENSE').read_bytes()
     for name in legacy_launchers:
         member = archive.getmember(name)
@@ -73,6 +74,7 @@ with tarfile.open(fileobj=io.BytesIO(run(['ar', 'p', deb, 'control.tar.gz']))) a
     control = archive.extractfile('control').read().decode()
     assert 'Version: ' + PKGVERSION + '\n' in control
     assert ', nftables,' in control
+    assert ', curl,' in control
     assert 'polkitd | policykit-1, pkexec | policykit-1' in control
     for field in ('Provides: velum', 'Replaces: velum (<< 1.2.0)', 'Breaks: velum (<< 1.2.0)'):
         assert field + '\n' in control
@@ -89,6 +91,8 @@ for name in sources:
 assert '/usr/share/licenses/eivro/NotoEmoji.LICENSE' in entries
 assert '/usr/share/licenses/eivro/Inter.LICENSE' in entries
 assert '/usr/share/licenses/eivro/ru-direct.LICENSE' in entries
+assert entries['/usr/share/doc/eivro/docs/DIAGNOSTICS.md'][-1] == sha((ROOT/'docs/DIAGNOSTICS.md').read_bytes())
+assert 'curl' in run(['rpm', '-qp', '--requires', rpm]).decode().splitlines()
 assert 'libxkbcommon-x11' in run(['rpm', '-qp', '--requires', rpm]).decode().splitlines()
 for name in legacy_launchers:
     assert entries['/' + name] == ['-rwxr-xr-x', 'root', 'root', sha(launcher_bytes)]
@@ -131,7 +135,7 @@ with tarfile.open(DIST / f'eivro-{VERSION}-source.tar.gz') as archive:
     assert archive.extractfile(f'eivro-{VERSION}-source/src/process.rs').read() == (ROOT / 'src/process.rs').read_bytes()
     assert archive.extractfile(f'eivro-{VERSION}-source/tests/connection.rs').read() == (ROOT / 'tests/connection.rs').read_bytes()
     assert archive.extractfile(f'eivro-{VERSION}-source/docs/VERIFICATION.md').read() == (ROOT / 'docs/VERIFICATION.md').read_bytes()
-    for name in ['.github/workflows/release.yml', 'scripts/verify-packages.py', 'src/resolver.rs', 'tests/resolver.rs', 'patches/sing-box/source.json', 'patches/sing-box/fakeip-allocation.patch', 'scripts/build-core.py', 'docs/DNS-ROUTING.md']:
+    for name in ['.github/workflows/release.yml', 'scripts/verify-packages.py', 'src/resolver.rs', 'tests/resolver.rs', 'patches/sing-box/source.json', 'patches/sing-box/fakeip-allocation.patch', 'scripts/build-core.py', 'docs/DNS-ROUTING.md', 'src/diagnostics.rs', 'src/diagnostics/repair.rs', 'src/ui/diagnostics.rs', 'docs/DIAGNOSTICS.md']:
         assert archive.extractfile(f'eivro-{VERSION}-source/{name}').read() == (ROOT/name).read_bytes()
 checks['source'] = 'PASS: current version, supervisor/tests/docs match; no home/config/build directories'
 subprocess.run(['python3','scripts/update-ru-presets.py','--check'],cwd=ROOT,check=True)

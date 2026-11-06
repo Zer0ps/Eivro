@@ -61,9 +61,18 @@ def dns(domain, resolver="192.0.2.53"):
         + struct.pack("!HH", 1, 1)
     )
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-        s.settimeout(4)
-        s.sendto(query, (resolver, 53))
-        answer = s.recv(4096)
+        # A reconnect can drop an in-flight UDP packet. Keep the same four-second
+        # budget while retransmitting like a DNS client, not a one-shot packet test.
+        s.settimeout(1)
+        for attempt in range(4):
+            s.sendto(query, (resolver, 53))
+            try:
+                answer = s.recv(4096)
+                break
+            except TimeoutError:
+                if attempt == 3:
+                    raise
+                print("DNS retransmission after core transition", flush=True)
     assert answer[3] & 15 == 0 and struct.unpack("!H", answer[6:8])[0] > 0
     return socket.inet_ntoa(answer[-4:])
 

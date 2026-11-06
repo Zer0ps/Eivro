@@ -1,6 +1,8 @@
 mod connection;
 mod design;
 mod desktop;
+#[cfg(target_os = "linux")]
+mod diagnostics;
 mod dialogs;
 mod effects;
 mod navigation;
@@ -30,6 +32,8 @@ enum Page {
     Connection,
     Subscriptions,
     Routes,
+    #[cfg(target_os = "linux")]
+    Diagnostics,
     Settings,
 }
 
@@ -51,6 +55,8 @@ pub struct App {
     network_due: Option<std::time::Instant>,
     network_initialized: bool,
     settings: Settings,
+    #[cfg(target_os = "linux")]
+    diagnostics: diagnostics::State,
     path: Option<PathBuf>,
     session: Option<Session>,
     events: Option<Receiver<Event>>,
@@ -197,6 +203,11 @@ impl App {
         #[cfg(feature = "qa")]
         match std::env::var("EIVRO_QA_PAGE").as_deref() {
             #[cfg(target_os = "linux")]
+            Ok(page @ ("diagnostics" | "diagnostics-error" | "diagnostics-clean")) => {
+                app.page = Page::Diagnostics;
+                app.diagnostics.fixture(page, &app.settings);
+            }
+            #[cfg(target_os = "linux")]
             Ok("exit-error") => {
                 app.page = Page::Settings;
                 app.exit_error = Some("Не удалось сохранить счётчики DNS.".into());
@@ -299,6 +310,8 @@ impl App {
             network_due: None,
             network_initialized: false,
             settings,
+            #[cfg(target_os = "linux")]
+            diagnostics: diagnostics::State::default(),
             path,
             session: None,
             events: None,
@@ -555,6 +568,8 @@ impl App {
     }
     fn reconfigure(&mut self) {
         #[cfg(target_os = "linux")]
+        self.diagnostics.invalidate_and_cancel();
+        #[cfg(target_os = "linux")]
         if self.want_connected
             && self.settings.mode == Mode::Tun
             && let Err(error) = eivro::domain_dns::check_ranges()
@@ -580,6 +595,8 @@ impl App {
         if self.quitting {
             return;
         }
+        #[cfg(target_os = "linux")]
+        self.diagnostics.invalidate_and_cancel();
         let wanted = self.want_connected;
         self.recovery.cancel();
         if let Some(session) = &mut self.session {
@@ -597,6 +614,10 @@ impl App {
             }
         } else {
             #[cfg(target_os = "linux")]
+            if self.diagnostics_connection_blocked() {
+                return;
+            }
+            #[cfg(target_os = "linux")]
             self.tun.allow_authorization();
             self.want_connected = true;
             self.start_connection(ctx);
@@ -606,6 +627,8 @@ impl App {
         if self.quitting {
             return;
         }
+        #[cfg(target_os = "linux")]
+        self.diagnostics.invalidate_and_cancel();
         if self.settings.mode != Mode::Tun || !self.settings.kill_switch {
             self.guard_session = false;
         }
@@ -815,6 +838,8 @@ impl eframe::App for App {
             }
         });
         self.poll_network(ctx);
+        #[cfg(target_os = "linux")]
+        self.poll_diagnostics(ctx);
         if self.appearance {
             self.page = Page::Settings;
             self.appearance = false;
@@ -870,9 +895,11 @@ impl eframe::App for App {
         self.catalog(ctx, p);
         self.dialogs(ctx, p);
         #[cfg(target_os = "linux")]
+        self.diagnostics_dialog(ctx, p);
+        #[cfg(target_os = "linux")]
         self.quit_dialog(ctx, p);
         #[cfg(target_os = "linux")]
-        let exit_modal = self.exit_error.is_some();
+        let exit_modal = self.exit_error.is_some() || self.diagnostics.modal_open();
         #[cfg(not(target_os = "linux"))]
         let exit_modal = false;
         let modal_open = exit_modal

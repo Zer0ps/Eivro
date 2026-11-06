@@ -246,6 +246,21 @@ pub(super) fn icon(ui: &egui::Ui, center: egui::Pos2, page: Page, color: Color32
                 painter.circle_filled(pos(x, y), 2.3, color);
             }
         }
+        #[cfg(target_os = "linux")]
+        Page::Diagnostics => {
+            painter.circle_stroke(center, 8.0, s);
+            painter.add(egui::Shape::line(
+                vec![
+                    pos(-5.0, 1.0),
+                    pos(-2.0, 1.0),
+                    pos(0.0, -4.0),
+                    pos(2.0, 4.0),
+                    pos(4.0, -1.0),
+                    pos(6.0, -1.0),
+                ],
+                s,
+            ));
+        }
     }
 }
 
@@ -365,6 +380,8 @@ impl App {
         });
     }
     pub(super) fn schedule_network_scan(&mut self, ctx: &egui::Context) {
+        #[cfg(target_os = "linux")]
+        self.diagnostics.invalidate();
         if self.settings.connections.is_empty() {
             return;
         }
@@ -383,14 +400,13 @@ impl App {
 
         #[cfg(target_os = "linux")]
         {
-            if self.settings.connections.is_empty() {
+            let monitor_needed =
+                !self.settings.connections.is_empty() || self.diagnostics.has_context();
+            if !monitor_needed {
                 self.network_monitor = None;
                 self.network_due = None;
             }
-            if !self.settings.connections.is_empty()
-                && self.network_monitor.is_none()
-                && !self.network_monitor_failed
-            {
+            if monitor_needed && self.network_monitor.is_none() && !self.network_monitor_failed {
                 let wake = ctx.clone();
                 match eivro::network::Monitor::start(Arc::new(move || wake.request_repaint())) {
                     Ok(monitor) => self.network_monitor = Some(monitor),

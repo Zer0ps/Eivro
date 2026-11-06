@@ -668,6 +668,10 @@ mod tests {
         }
         let (mut client, input) = UnixStream::pair().unwrap();
         client.write_all(b"{\"command\":\"start\",\"request\":{\"uri\":\"synthetic\",\"port\":2080,\"bypass\":[],\"policies\":[],\"kill_switch\":false,\"connections\":[]}}\n").unwrap();
+        // Parallel subprocess tests can briefly inherit a CLOEXEC descriptor
+        // between fork and exec. Shut down the socket endpoint, not just this
+        // reference, so the fixture really represents a hung-up channel.
+        client.shutdown(std::net::Shutdown::Both).unwrap();
         drop(client);
         serve_backend(input, std::io::sink(), Cleanup).unwrap();
     }

@@ -23,6 +23,27 @@ pub struct Instance {
 }
 impl Instance {
     pub fn acquire(scope: &str, show: bool) -> std::io::Result<Option<Self>> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            match Self::acquire_once(scope, show) {
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::ConnectionRefused
+                            | std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::BrokenPipe
+                            | std::io::ErrorKind::UnexpectedEof
+                    ) && std::time::Instant::now() < deadline =>
+                {
+                    // A closing instance (or a child between fork and exec)
+                    // can briefly retain the abstract socket without a worker.
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                result => return result,
+            }
+        }
+    }
+    fn acquire_once(scope: &str, show: bool) -> std::io::Result<Option<Self>> {
         let uid = unsafe { libc::geteuid() };
         let hash = scope.bytes().fold(0xcbf29ce484222325u64, |h, b| {
             (h ^ b as u64).wrapping_mul(0x100000001b3)
@@ -66,7 +87,9 @@ impl Instance {
                     if !same_user(&stream, uid) {
                         continue;
                     }
-                    let _ = stream.set_read_timeout(Some(Duration::from_millis(250)));
+                    // Match the launching client's budget: under CPU pressure
+                    // it may be descheduled between connect and its one-byte send.
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
                     let _ = stream.set_write_timeout(Some(Duration::from_millis(250)));
                     let mut command = [0];
                     if stream.read_exact(&mut command).is_ok() && b"SP".contains(&command[0]) {
@@ -121,6 +144,26 @@ impl Drop for Instance {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn activation_tolerates_a_delayed_client_after_connect() {
+        let scope = format!("instance-delayed-{}", std::process::id());
+        let first = Instance::acquire(&scope, true).unwrap().unwrap();
+        let uid = unsafe { libc::geteuid() };
+        let hash = scope.bytes().fold(0xcbf29ce484222325u64, |h, b| {
+            (h ^ b as u64).wrapping_mul(0x100000001b3)
+        });
+        let address = SocketAddr::from_abstract_name(format!("velum-{uid}-{hash:016x}")).unwrap();
+        let mut client = UnixStream::connect_addr(&address).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(400));
+        client.write_all(b"S").unwrap();
+        let mut ack = [0];
+        client.read_exact(&mut ack).unwrap();
+        assert_eq!(ack, *b"K");
+        first.events.recv_timeout(Duration::from_secs(1)).unwrap();
+    }
     #[test]
     fn second_launch_activates_existing_window_and_cleanup_releases_name() {
         let scope = format!("instance-test-{}", std::process::id());

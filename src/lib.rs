@@ -6,6 +6,8 @@ pub mod connectivity;
 #[cfg_attr(windows, path = "platform/windows/desktop.rs")]
 pub mod desktop;
 #[cfg(target_os = "linux")]
+pub mod diagnostics;
+#[cfg(target_os = "linux")]
 pub mod domain_dns;
 #[cfg(target_os = "linux")]
 pub mod guard;

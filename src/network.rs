@@ -285,8 +285,13 @@ impl Monitor {
         let socket = unsafe { OwnedFd::from_raw_fd(fd) };
         let mut address: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
         address.nl_family = libc::AF_NETLINK as u16;
-        address.nl_groups =
-            (libc::RTMGRP_LINK | libc::RTMGRP_IPV4_IFADDR | libc::RTMGRP_IPV6_IFADDR) as u32;
+        address.nl_groups = (libc::RTMGRP_LINK
+            | libc::RTMGRP_IPV4_IFADDR
+            | libc::RTMGRP_IPV6_IFADDR
+            | libc::RTMGRP_IPV4_ROUTE
+            | libc::RTMGRP_IPV6_ROUTE
+            | libc::RTMGRP_IPV4_RULE) as u32
+            | (1 << (libc::RTNLGRP_IPV6_RULE - 1));
         if unsafe {
             libc::bind(
                 fd,

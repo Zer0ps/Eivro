@@ -45,13 +45,13 @@ mod linux {
         {
             return Err("privilege".into());
         }
-        let release = std::env::args()
-            .collect::<Vec<_>>()
-            .get(1)
-            .is_some_and(|s| s == "--release");
-        if std::env::args_os().count() != if release { 2 } else { 1 } {
-            return Err("arguments".into());
-        }
+        let args = std::env::args().skip(1).collect::<Vec<_>>();
+        let mode = match args.as_slice() {
+            [] => "tunnel",
+            [flag] if flag == "--release" => "release",
+            [flag] if flag == "--repair-dns" => "repair-dns",
+            _ => return Err("arguments".into()),
+        };
         let lock = OpenOptions::new()
             .read(true)
             .write(true)
@@ -62,15 +62,26 @@ mod linux {
             .open("/run/velum-tun.lock")
             .map_err(|_| "lock")?;
         let metadata = lock.metadata().map_err(|_| "lock")?;
-        if !metadata.is_file()
-            || metadata.uid() != 0
-            || metadata.mode() & 0o077 != 0
-            || unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0
-        {
+        if !metadata.is_file() || metadata.uid() != 0 || metadata.mode() & 0o077 != 0 {
+            return Err("lock".into());
+        }
+        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            if mode == "repair-dns" {
+                let _ = std::io::stdout().write_all(b"BUSY\n");
+                let _ = std::io::stdout().flush();
+            }
             return Err("already running".into());
         }
-        if release {
+        if mode == "release" {
             return eivro::guard::Guard::clear_stale();
+        }
+        // pkexec may leave PDEATHSIG tied to the spawning Session thread
+        // (notably for root callers). The controller owns us across worker
+        // restarts through stdin; EOF, not creator-thread death, ends the lease.
+        clear_parent_signal()?;
+        if mode == "repair-dns" {
+            let input = std::fs::File::open("/dev/stdin").map_err(|_| "input")?;
+            return eivro::diagnostics::repair::serve_dns_repair(input, std::io::stdout());
         }
         let signals = shutdown_signals()?;
         let input = std::fs::File::open("/dev/stdin").map_err(|_| "input")?;
@@ -100,6 +111,13 @@ mod linux {
             }
             Ok(OwnedFd::from_raw_fd(fd))
         }
+    }
+
+    fn clear_parent_signal() -> eivro::Result<()> {
+        if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, 0) } != 0 {
+            return Err("parent signal".into());
+        }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -134,6 +152,15 @@ mod linux {
             if std::env::var_os("EIVRO_SHUTDOWN_SIGNAL_CHILD").is_none() {
                 return;
             }
+            unsafe {
+                assert_eq!(libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM), 0);
+            }
+            clear_parent_signal().unwrap();
+            let mut parent_signal: libc::c_int = -1;
+            unsafe {
+                assert_eq!(libc::prctl(libc::PR_GET_PDEATHSIG, &mut parent_signal), 0);
+            }
+            assert_eq!(parent_signal, 0);
             let signals = shutdown_signals().unwrap();
             let stopped = Rc::new(Cell::new(false));
             println!("SIGNAL_READY");
