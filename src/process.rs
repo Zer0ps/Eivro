@@ -92,6 +92,16 @@ pub(crate) fn child_command(core: &Path) -> Command {
     unsafe {
         c.pre_exec(move || {
             #[cfg(target_os = "linux")]
+            {
+                // The helper consumes termination signals through signalfd.
+                // Its cores must still receive TERM, including PDEATHSIG.
+                let mut mask = std::mem::zeroed();
+                libc::sigemptyset(&mut mask);
+                if libc::sigprocmask(libc::SIG_SETMASK, &mask, std::ptr::null_mut()) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            #[cfg(target_os = "linux")]
             if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
                 return Err(std::io::Error::last_os_error());
             }
@@ -1151,6 +1161,54 @@ mod privilege_tests {
 #[cfg(test)]
 mod connection_check_tests {
     use super::*;
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn child_command_restores_termination_signal_mask() {
+        if std::env::var_os("EIVRO_BLOCKED_SIGNAL_CHILD").is_some() {
+            let mut child = child_command(Path::new("/bin/sleep"))
+                .arg("30")
+                .spawn()
+                .unwrap();
+            let start = Instant::now();
+            terminate(&mut child);
+            assert!(
+                start.elapsed() < Duration::from_secs(1),
+                "inherited mask blocked TERM until the SIGKILL fallback"
+            );
+            use std::os::unix::process::ExitStatusExt;
+            assert_eq!(child.wait().unwrap().signal(), Some(libc::SIGTERM));
+            return;
+        }
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "process::connection_check_tests::child_command_restores_termination_signal_mask",
+                "--nocapture",
+            ])
+            .env("EIVRO_BLOCKED_SIGNAL_CHILD", "1");
+        unsafe {
+            command.pre_exec(|| {
+                let mut mask = std::mem::zeroed();
+                libc::sigemptyset(&mut mask);
+                for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
+                    libc::sigaddset(&mut mask, signal);
+                }
+                if libc::sigprocmask(libc::SIG_BLOCK, &mask, std::ptr::null_mut()) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     fn sleeper() -> Child {
         Command::new("sleep").arg("30").spawn().unwrap()

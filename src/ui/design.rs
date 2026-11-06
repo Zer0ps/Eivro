@@ -315,32 +315,37 @@ impl App {
     fn commit_checked(
         &mut self,
         next: Settings,
-        _check: impl FnOnce() -> eivro::Result<()>,
+        check: impl FnOnce() -> eivro::Result<()>,
     ) -> bool {
+        match self.save_settings_checked(next, check) {
+            Ok(()) => true,
+            Err(error) => {
+                self.error = Some(error);
+                false
+            }
+        }
+    }
+
+    pub(super) fn save_settings_checked(
+        &mut self,
+        next: Settings,
+        _check: impl FnOnce() -> eivro::Result<()>,
+    ) -> eivro::Result<()> {
         #[cfg(target_os = "linux")]
         if self.want_connected
             && next.mode == Mode::Tun
             && network_settings_changed(&self.settings, &next)
             && let Err(error) = _check()
         {
-            self.error = Some(format!("{error} Изменения не применены."));
-            return false;
+            return Err(format!("{error} Изменения не применены."));
         }
-        let result = self
+        let path = self
             .path
             .as_ref()
-            .ok_or_else(|| "Настройки недоступны для записи. Изменения не применены.".to_string())
-            .and_then(|path| storage::save(path, &next));
-        match result {
-            Ok(()) => {
-                self.settings = next;
-                true
-            }
-            Err(e) => {
-                self.error = Some(e);
-                false
-            }
-        }
+            .ok_or("Настройки недоступны для записи. Изменения не применены.")?;
+        storage::save(path, &next)?;
+        self.settings = next;
+        Ok(())
     }
     pub(super) fn scan_network(&mut self, ctx: &egui::Context) {
         #[cfg(feature = "qa")]

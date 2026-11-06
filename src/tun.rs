@@ -74,9 +74,20 @@ pub fn serve(
 }
 
 pub fn serve_backend(
+    input: impl Read + AsRawFd,
+    output: impl Write,
+    backend: impl Backend,
+) -> Result<()> {
+    serve_backend_with_shutdown(input, output, backend, None)
+}
+
+/// The standalone helper supplies its signalfd; library callers keep their own
+/// signal policy. The descriptor must remain open until this function returns.
+pub fn serve_backend_with_shutdown(
     mut input: impl Read + AsRawFd,
     mut output: impl Write,
     mut backend: impl Backend,
+    shutdown: Option<i32>,
 ) -> Result<()> {
     let mut core: Option<Running> = None;
     let mut pid: Option<OwnedFd> = None;
@@ -90,12 +101,23 @@ pub fn serve_backend(
                 companion.as_ref().map_or(-1, AsRawFd::as_raw_fd),
                 libc::POLLIN,
             ),
+            process::pollfd(shutdown.unwrap_or(-1), libc::POLLIN),
         ];
         process::poll(&mut fds)?;
+        if fds[3].revents != 0 || fds[0].revents & libc::POLLHUP != 0 {
+            // Stop the DNS-producing core before flushing its answers or
+            // removing protection, including when a request is also pending.
+            core.take();
+            return backend.stop(false, false);
+        }
         if fds[1].revents != 0 || fds[2].revents != 0 {
             core.take();
             pid.take();
             companion.take();
+            // Flush stale answers even if the GUI cannot respond. A flush
+            // failure must not drop the helper and its kill switch: report the
+            // core failure and leave DNS cleanup pending for a later retry.
+            let _ = backend.stop(true, false);
             output
                 .write_all(b"FAILED\n")
                 .and_then(|_| output.flush())
@@ -105,7 +127,8 @@ pub fn serve_backend(
             let mut buf = [0; 4096];
             let n = input.read(&mut buf).map_err(|_| "input")?;
             if n == 0 {
-                return Ok(());
+                core.take();
+                return backend.stop(false, false);
             }
             pending.extend_from_slice(&buf[..n]);
             while let Some(end) = pending.iter().position(|b| *b == b'\n') {
@@ -199,8 +222,10 @@ pub fn serve_backend(
 pub struct Controller {
     helper: Mutex<Option<Helper>>,
     authorization_denied: AtomicBool,
+    cleanup_pending: AtomicBool,
 }
 pub const AUTHORIZATION_DENIED: &str = "Доступ TUN отменён.";
+const CLEANUP_PENDING: &str = "Помощник TUN завершился без подтверждения очистки. Защита сети и память DNS могут остаться. Для восстановления доступа закройте Eivro и выполните pkexec /usr/libexec/eivro/eivro-tun --release (см. руководство). Очистку памяти DNS можно повторить после нового подключения TUN.";
 impl Controller {
     pub fn authorization_denied(&self) -> bool {
         self.authorization_denied.load(Ordering::Acquire)
@@ -211,9 +236,16 @@ impl Controller {
     }
     pub fn retire(&self) -> Result<()> {
         let mut holder = self.helper.lock().map_err(|_| "Ошибка управления TUN.")?;
+        self.remove_exited_helper(&mut holder);
         if let Some(helper) = holder.as_mut() {
-            helper.retire()?;
+            if let Err(error) = helper.retire() {
+                self.remember_cleanup(helper);
+                return Err(error);
+            }
+        } else if self.cleanup_pending.load(Ordering::Acquire) {
+            return Err(CLEANUP_PENDING.into());
         }
+        self.cleanup_pending.store(false, Ordering::Release);
         holder.take();
         Ok(())
     }
@@ -225,10 +257,33 @@ impl Controller {
     }
     fn release_with_dns(&self, preserve_dns: bool) -> Result<()> {
         let mut holder = self.helper.lock().map_err(|_| "Ошибка управления TUN.")?;
+        self.remove_exited_helper(&mut holder);
         if let Some(helper) = holder.as_mut() {
-            helper.stop(false, preserve_dns)?;
+            if let Err(error) = helper.stop(false, preserve_dns) {
+                self.remember_cleanup(helper);
+                return Err(error);
+            }
+            self.cleanup_pending.store(false, Ordering::Release);
+        } else if !preserve_dns && self.cleanup_pending.load(Ordering::Acquire) {
+            return Err(CLEANUP_PENDING.into());
         }
         Ok(())
+    }
+    fn remember_cleanup(&self, helper: &Helper) {
+        // A complete Start can change DNS/firewall before READY is sent.
+        // Confirmed pkexec refusal is the only case known not to have run it.
+        if helper.was_ready || (helper.request_sent && !self.authorization_denied()) {
+            self.cleanup_pending.store(true, Ordering::Release);
+        }
+    }
+    fn remove_exited_helper(&self, holder: &mut Option<Helper>) {
+        if holder
+            .as_mut()
+            .is_some_and(|helper| helper.child.try_wait().ok().flatten().is_some())
+        {
+            self.remember_cleanup(holder.as_ref().unwrap());
+            holder.take();
+        }
     }
     pub(crate) fn run(
         &self,
@@ -241,12 +296,7 @@ impl Controller {
             return Err(AUTHORIZATION_DENIED.into());
         }
         let mut holder = self.helper.lock().map_err(|_| "Ошибка управления TUN.")?;
-        if holder
-            .as_mut()
-            .is_some_and(|h| h.child.try_wait().ok().flatten().is_some())
-        {
-            holder.take();
-        }
+        self.remove_exited_helper(&mut holder);
         if holder.is_none() {
             *holder = Some(Helper::spawn()?);
         }
@@ -257,6 +307,7 @@ impl Controller {
                 return Ok(());
             }
             started = true;
+            self.cleanup_pending.store(false, Ordering::Release);
             if !ready(helper.pid.as_raw_fd())? {
                 return Ok(());
             }
@@ -301,6 +352,7 @@ impl Controller {
             Ok(())
         };
         if (!started && !helper.request_sent) || stopped.is_err() {
+            self.remember_cleanup(helper);
             holder.take();
         }
         result.and(stopped)
@@ -329,6 +381,7 @@ struct Helper {
     pid: OwnedFd,
     pending: Vec<u8>,
     request_sent: bool,
+    was_ready: bool,
 }
 impl Helper {
     fn spawn() -> Result<Self> {
@@ -357,6 +410,7 @@ impl Helper {
             pid,
             pending: Vec::new(),
             request_sent: false,
+            was_ready: false,
         })
     }
     fn read_lines(&mut self) -> Result<Vec<String>> {
@@ -446,6 +500,7 @@ impl Helper {
                     );
                 }
                 if lines.len() == 1 && lines[0] == "READY" {
+                    self.was_ready = true;
                     return Ok(true);
                 }
                 if !lines.is_empty() {
@@ -528,6 +583,96 @@ impl Drop for Helper {
 mod tests {
     use super::*;
     #[test]
+    fn helper_loss_before_ready_requires_cleanup_confirmation() {
+        let child = Command::new("python3")
+            .args(["-c", "import sys; sys.stdin.readline(); sys.exit(1)"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let controller = Controller {
+            helper: Mutex::new(Some(Helper::from_child(child).unwrap())),
+            ..Default::default()
+        };
+        let req: ConnectRequest =
+            serde_json::from_str(r#"{"uri":"synthetic","bypass":[],"port":2080}"#).unwrap();
+        let (_stop, watch) = UnixStream::pair().unwrap();
+        assert!(
+            controller
+                .run(&req, &watch, -1, |_| panic!("not ready"))
+                .is_err()
+        );
+        assert!(controller.release().is_err());
+        assert!(controller.retire().is_err());
+        assert!(controller.prepare().is_ok());
+    }
+    #[test]
+    fn shutdown_precedes_pending_requests_and_reports_cleanup_failure() {
+        struct Cleanup;
+        impl Backend for Cleanup {
+            fn start(&mut self, _: &ConnectRequest) -> Result<Running> {
+                panic!("shutdown must take priority over requests");
+            }
+            fn stop(&mut self, protection: bool, dns: bool) -> Result<()> {
+                assert!(!protection && !dns);
+                Err("fixture cleanup failure".into())
+            }
+        }
+        let (mut client, input) = UnixStream::pair().unwrap();
+        client.write_all(b"invalid pending request\n").unwrap();
+        let (mut signal, shutdown) = UnixStream::pair().unwrap();
+        signal.write_all(b"S").unwrap();
+        assert_eq!(
+            serve_backend_with_shutdown(
+                input,
+                std::io::sink(),
+                Cleanup,
+                Some(shutdown.as_raw_fd()),
+            )
+            .unwrap_err(),
+            "fixture cleanup failure"
+        );
+    }
+
+    #[test]
+    fn gui_eof_reports_cleanup_failure() {
+        struct Cleanup;
+        impl Backend for Cleanup {
+            fn start(&mut self, _: &ConnectRequest) -> Result<Running> {
+                panic!("EOF must not launch a core");
+            }
+            fn stop(&mut self, protection: bool, dns: bool) -> Result<()> {
+                assert!(!protection && !dns);
+                Err("fixture cleanup failure".into())
+            }
+        }
+        let (client, input) = UnixStream::pair().unwrap();
+        drop(client);
+        assert_eq!(
+            serve_backend(input, std::io::sink(), Cleanup).unwrap_err(),
+            "fixture cleanup failure"
+        );
+    }
+
+    #[test]
+    fn closed_gui_pipe_cannot_start_its_buffered_request() {
+        struct Cleanup;
+        impl Backend for Cleanup {
+            fn start(&mut self, _: &ConnectRequest) -> Result<Running> {
+                panic!("a disconnected GUI must not start a core");
+            }
+            fn stop(&mut self, protection: bool, dns: bool) -> Result<()> {
+                assert!(!protection && !dns);
+                Ok(())
+            }
+        }
+        let (mut client, input) = UnixStream::pair().unwrap();
+        client.write_all(b"{\"command\":\"start\",\"request\":{\"uri\":\"synthetic\",\"port\":2080,\"bypass\":[],\"policies\":[],\"kill_switch\":false,\"connections\":[]}}\n").unwrap();
+        drop(client);
+        serve_backend(input, std::io::sink(), Cleanup).unwrap();
+    }
+
+    #[test]
     fn cancelled_authorization_is_latched_across_pipe_exit_races() {
         for code in [126, 127] {
             let child = Command::new("python3")
@@ -566,8 +711,94 @@ mod tests {
             }
             controller.allow_authorization();
             assert!(!controller.authorization_denied());
+            assert!(controller.release().is_ok());
+            assert!(controller.retire().is_ok());
         }
     }
+
+    #[test]
+    fn lost_ready_helper_keeps_cleanup_pending_until_a_successful_reconnect() {
+        let spawn = |code: &str| {
+            Helper::from_child(
+                Command::new("python3")
+                    .args(["-u", "-c", code])
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .spawn()
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        let controller = Controller {
+            helper: Mutex::new(Some(spawn(
+                "import sys,json\nfor line in sys.stdin:\n c=json.loads(line)\n if c['command']=='start': print('READY',flush=True)\n else: sys.exit(0)\n",
+            ))),
+            ..Default::default()
+        };
+        let request = ConnectRequest {
+            uri: "synthetic".into(),
+            port: 2080,
+            bypass: vec![],
+            ru_preset: None,
+            bridge_port: None,
+            probe_port: None,
+            policies: vec![],
+            kill_switch: true,
+            connections: vec![],
+        };
+        let (stop, watch) = UnixStream::pair().unwrap();
+        let mut stop = Some(stop);
+        assert!(
+            controller
+                .run(&request, &watch, -1, |_| {
+                    stop.take();
+                    Ok(true)
+                })
+                .is_err()
+        );
+        assert!(controller.helper.lock().unwrap().is_none());
+        assert_eq!(controller.release().unwrap_err(), CLEANUP_PENDING);
+        assert_eq!(controller.retire().unwrap_err(), CLEANUP_PENDING);
+        assert!(controller.prepare().is_ok());
+        assert!(controller.helper.lock().unwrap().is_none());
+
+        *controller.helper.lock().unwrap() = Some(spawn(
+            "import sys,json\nfor line in sys.stdin:\n c=json.loads(line)\n print({'start':'READY','stop':'STOPPED','retire':'RETIRED'}[c['command']],flush=True)\n",
+        ));
+        let (stop, watch) = UnixStream::pair().unwrap();
+        let mut stop = Some(stop);
+        controller
+            .run(&request, &watch, -1, |_| {
+                stop.take();
+                Ok(true)
+            })
+            .unwrap();
+        assert!(!controller.cleanup_pending.load(Ordering::Acquire));
+        controller.release().unwrap();
+        controller.retire().unwrap();
+    }
+
+    #[test]
+    fn idle_helper_exit_does_not_silently_release_saved_dns_state() {
+        let mut helper = Helper::from_child(
+            Command::new("true")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        )
+        .unwrap();
+        helper.was_ready = true;
+        helper.child.wait().unwrap();
+        let controller = Controller {
+            helper: Mutex::new(Some(helper)),
+            ..Default::default()
+        };
+        assert_eq!(controller.retire().unwrap_err(), CLEANUP_PENDING);
+        assert_eq!(controller.release().unwrap_err(), CLEANUP_PENDING);
+        assert!(controller.prepare().is_ok());
+    }
+
     #[test]
     fn reconnect_preserves_guard_but_explicit_stop_releases_it() {
         let code = "import sys,json\ni=0\nfor line in sys.stdin:\n c=json.loads(line)\n if c['command']=='start': print('READY',flush=True)\n else:\n  assert c['preserve_protection']==(i==0),c\n  i+=1\n  print('STOPPED',flush=True)\n";

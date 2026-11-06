@@ -18,6 +18,7 @@ pub struct SystemBackend {
     dns: Option<crate::domain_dns::state::State>,
     dns_active: bool,
     gateways: crate::domain_dns::gateways::Gateways,
+    rules: crate::tun_routes::Rules,
 }
 impl crate::tun::Backend for SystemBackend {
     fn preflight(&self, req: &crate::config::ConnectRequest) -> Result<()> {
@@ -25,11 +26,17 @@ impl crate::tun::Backend for SystemBackend {
         crate::domain_dns::check_ranges()
     }
     fn start(&mut self, req: &crate::config::ConnectRequest) -> Result<crate::tun::Running> {
+        self.rules.cleanup()?;
         crate::config::generate(req, crate::config::Mode::Tun)?;
         crate::process::tun_preflight()?;
         crate::domain_dns::check_ranges()?;
         let core = Path::new(crate::process::INSTALLED_CORE);
         crate::process::version_check(core)?;
+        // A previous helper may have died while holding the owned firewall.
+        // Release it before unprotected bootstrap DNS, never after resolution.
+        if !req.kill_switch {
+            self.release_guard()?;
+        }
         let mut config = crate::config::generate_with_network(
             req,
             crate::config::Mode::Tun,
@@ -47,12 +54,8 @@ impl crate::tun::Backend for SystemBackend {
             "enabled":true,"path":format!("/proc/self/fd/{fd}"),
             "store_fakeip":true,"store_dns":false
         });
-        if req.kill_switch {
-            if self.guard.is_none() {
-                self.guard = Some(Guard::arm()?);
-            }
-        } else if let Some(mut guard) = self.guard.take() {
-            guard.release()?;
+        if req.kill_switch && self.guard.is_none() {
+            self.guard = Some(Guard::arm()?);
         }
         // Resolve the VPN endpoint before the TUN can intercept system DNS.
         // Keep the hostname in the outbound so TLS, WS Host and gRPC authority
@@ -82,6 +85,12 @@ impl crate::tun::Backend for SystemBackend {
         } else {
             None
         };
+        if let Err(error) = self.rules.begin() {
+            if let Some(child) = &mut secondary {
+                crate::process::terminate(child);
+            }
+            return Err(error);
+        }
         let started = crate::process::spawn_configuration_with_state(
             core,
             &config,
@@ -90,10 +99,12 @@ impl crate::tun::Backend for SystemBackend {
         .and_then(|mut primary| {
             self.dns_active = true;
             if let Err(error) = crate::process::ready(&mut primary, req.port)
+                .and_then(|_| self.rules.capture())
                 .and_then(|_| dns.initialized())
                 .and_then(|_| crate::domain_dns::flush_system_cache())
             {
                 crate::process::terminate(&mut primary);
+                self.rules.cleanup()?;
                 return Err(error);
             }
             Ok(primary)
@@ -104,19 +115,26 @@ impl crate::tun::Backend for SystemBackend {
                 if let Some(child) = &mut secondary {
                     crate::process::terminate(child);
                 }
+                self.rules.cleanup()?;
                 Err(e)
             }
         }
     }
     fn stop(&mut self, preserve: bool, preserve_dns: bool) -> Result<()> {
-        if !preserve && let Some(mut guard) = self.guard.take() {
-            guard.release()?;
+        let routes = self.rules.cleanup();
+        // Resolver cleanup is independent of policy-rule ownership. A rule
+        // conflict must not leave cached FakeIPs behind after a core crash.
+        let dns = if !preserve_dns && self.dns_active {
+            crate::domain_dns::flush_system_cache().map(|()| self.dns_active = false)
+        } else {
+            Ok(())
+        };
+        routes?;
+        if !preserve {
+            self.release_guard()?;
         }
-        if !preserve_dns && self.dns_active {
-            crate::domain_dns::flush_system_cache()?;
-            self.dns_active = false;
-        }
-        if !preserve_dns {
+        dns?;
+        if !preserve_dns && !preserve {
             self.gateways = Default::default();
         }
         Ok(())
@@ -136,8 +154,21 @@ impl crate::tun::Backend for SystemBackend {
         Ok(())
     }
 }
+impl SystemBackend {
+    fn release_guard(&mut self) -> Result<()> {
+        if let Some(guard) = self.guard.as_mut() {
+            // Keep ownership on failure so a later Stop/Retire can retry.
+            guard.release()?;
+            self.guard = None;
+            Ok(())
+        } else {
+            Guard::clear_stale()
+        }
+    }
+}
 impl Drop for SystemBackend {
     fn drop(&mut self) {
+        let _ = self.rules.cleanup();
         if self.dns_active {
             let _ = crate::domain_dns::flush_system_cache();
         }
@@ -421,5 +452,24 @@ mod tests {
         apply("table inet velum_guard { comment \"belongs to someone else\"; }\n").unwrap();
         assert!(Guard::arm().is_err());
         run(&["nft", "list", "table", "inet", "velum_guard"]);
+        let mut backend = SystemBackend::default();
+        backend.guard = Some(Guard { active: true });
+        assert!(crate::tun::Backend::stop(&mut backend, false, false).is_err());
+        assert!(
+            backend.guard.is_some(),
+            "failed release lost ownership and cannot retry"
+        );
+        apply(&format!("delete table inet velum_guard\n{}", ruleset())).unwrap();
+        crate::tun::Backend::stop(&mut backend, false, false).unwrap();
+        assert!(backend.guard.is_none() && !owned_table().unwrap());
+        let mut stale = Guard::arm().unwrap();
+        stale.active = false; // Simulate a dead owner without removing its table.
+        drop(stale);
+        crate::tun::Backend::stop(&mut backend, false, false).unwrap();
+        assert!(
+            !owned_table().unwrap(),
+            "new helper left an owned stale guard"
+        );
+        run(&["nft", "list", "table", "inet", "other_application"]);
     }
 }

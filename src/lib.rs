@@ -27,6 +27,8 @@ pub mod subscription;
 #[cfg_attr(target_os = "macos", path = "platform/macos/system_proxy.rs")]
 #[cfg_attr(windows, path = "platform/windows/system_proxy.rs")]
 pub mod system_proxy;
+#[cfg(target_os = "linux")]
+mod tun_routes;
 pub mod xray;
 
 pub type Result<T> = std::result::Result<T, String>;

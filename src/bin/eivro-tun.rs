@@ -16,7 +16,7 @@ mod linux {
     use std::{
         fs::OpenOptions,
         io::Write,
-        os::fd::AsRawFd,
+        os::fd::{AsRawFd, FromRawFd, OwnedFd},
         os::unix::fs::{MetadataExt, OpenOptionsExt},
         path::Path,
     };
@@ -72,11 +72,135 @@ mod linux {
         if release {
             return eivro::guard::Guard::clear_stale();
         }
+        let signals = shutdown_signals()?;
         let input = std::fs::File::open("/dev/stdin").map_err(|_| "input")?;
-        eivro::tun::serve_backend(
+        eivro::tun::serve_backend_with_shutdown(
             input,
             std::io::stdout(),
             eivro::guard::SystemBackend::default(),
+            Some(signals.as_raw_fd()),
         )
+    }
+
+    // Only the single-threaded privileged helper owns these signal dispositions.
+    // SIGKILL cannot be caught; its surviving resources require explicit recovery.
+    fn shutdown_signals() -> eivro::Result<OwnedFd> {
+        unsafe {
+            let mut mask = std::mem::zeroed();
+            libc::sigemptyset(&mut mask);
+            for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
+                libc::sigaddset(&mut mask, signal);
+            }
+            if libc::sigprocmask(libc::SIG_BLOCK, &mask, std::ptr::null_mut()) != 0 {
+                return Err("signals".into());
+            }
+            let fd = libc::signalfd(-1, &mask, libc::SFD_CLOEXEC | libc::SFD_NONBLOCK);
+            if fd < 0 {
+                return Err("signals".into());
+            }
+            Ok(OwnedFd::from_raw_fd(fd))
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::{
+            cell::Cell,
+            io::{BufRead, BufReader},
+            os::unix::process::CommandExt,
+            process::{Command, Stdio},
+            rc::Rc,
+            time::{Duration, Instant},
+        };
+
+        struct Backend(Rc<Cell<bool>>);
+        impl eivro::tun::Backend for Backend {
+            fn start(
+                &mut self,
+                _: &eivro::config::ConnectRequest,
+            ) -> eivro::Result<eivro::tun::Running> {
+                panic!("the signal test must not launch a core");
+            }
+            fn stop(&mut self, protection: bool, dns: bool) -> eivro::Result<()> {
+                assert!(!protection && !dns);
+                self.0.set(true);
+                Ok(())
+            }
+        }
+
+        #[test]
+        fn shutdown_signal_child() {
+            if std::env::var_os("EIVRO_SHUTDOWN_SIGNAL_CHILD").is_none() {
+                return;
+            }
+            let signals = shutdown_signals().unwrap();
+            let stopped = Rc::new(Cell::new(false));
+            println!("SIGNAL_READY");
+            std::io::stdout().flush().unwrap();
+            eivro::tun::serve_backend_with_shutdown(
+                std::fs::File::open("/dev/stdin").unwrap(),
+                std::io::sink(),
+                Backend(stopped.clone()),
+                Some(signals.as_raw_fd()),
+            )
+            .unwrap();
+            assert!(stopped.get(), "shutdown must run explicit cleanup");
+        }
+
+        #[test]
+        fn termination_signals_run_cleanup_without_gui_eof() {
+            for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
+                // A subprocess owns the mask; parallel unit tests are unaffected.
+                let mut command = Command::new(std::env::current_exe().unwrap());
+                command
+                    .args([
+                        "--exact",
+                        "linux::tests::shutdown_signal_child",
+                        "--nocapture",
+                    ])
+                    .env("EIVRO_SHUTDOWN_SIGNAL_CHILD", "1")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped());
+                // The test harness has its own main thread. Block before exec
+                // so it cannot consume a process signal intended for signalfd.
+                unsafe {
+                    command.pre_exec(|| {
+                        let mut mask = std::mem::zeroed();
+                        libc::sigemptyset(&mut mask);
+                        for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
+                            libc::sigaddset(&mut mask, signal);
+                        }
+                        if libc::sigprocmask(libc::SIG_BLOCK, &mask, std::ptr::null_mut()) != 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                        Ok(())
+                    });
+                }
+                let mut child = command.spawn().unwrap();
+                let mut output = BufReader::new(child.stdout.take().unwrap());
+                loop {
+                    let mut line = String::new();
+                    assert_ne!(output.read_line(&mut line).unwrap(), 0);
+                    if line.contains("SIGNAL_READY") {
+                        break;
+                    }
+                }
+                assert_eq!(unsafe { libc::kill(child.id() as i32, signal) }, 0);
+                let end = Instant::now() + Duration::from_secs(3);
+                let status = loop {
+                    if let Some(status) = child.try_wait().unwrap() {
+                        break status;
+                    }
+                    if Instant::now() >= end {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        panic!("helper did not process signal {signal}");
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                };
+                assert!(status.success(), "signal {signal}: {status}");
+            }
+        }
     }
 }

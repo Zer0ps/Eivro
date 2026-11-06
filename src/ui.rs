@@ -118,18 +118,10 @@ impl App {
         instance: crate::instance::Instance,
         window_hiding: bool,
     ) -> Self {
-        let path = storage::prepare_config();
-        let loaded = path
-            .as_ref()
-            .map_err(Clone::clone)
-            .and_then(|p| storage::load(p));
-        let error = loaded
-            .as_ref()
-            .err()
-            .cloned()
-            .or_else(|| eivro::system_proxy::recover_stale().err());
-        let writable = error.is_none();
-        let settings = loaded.unwrap_or_default();
+        let mut app = Self::load_model(
+            storage::prepare_config(),
+            eivro::system_proxy::recover_stale,
+        );
         let mut style = (*cc.egui_ctx.style()).clone();
         style.spacing.item_spacing = Vec2::new(10.0, 8.0);
         style.spacing.button_padding = Vec2::new(14.0, 8.0);
@@ -152,7 +144,6 @@ impl App {
         style.animation_time = 0.0;
         cc.egui_ctx.set_style(style);
         crate::emoji::install(&cc.egui_ctx);
-        let mut app = Self::model(settings, if writable { path.ok() } else { None }, error);
         app.window_hiding = window_hiding;
         #[cfg(feature = "qa")]
         if std::env::var("EIVRO_QA_FIXTURE").as_deref() == Ok("1") {
@@ -269,6 +260,26 @@ impl App {
         app
     }
 
+    fn load_model(
+        path: eivro::Result<PathBuf>,
+        recover_proxy: impl FnOnce() -> eivro::Result<()>,
+    ) -> Self {
+        let loaded = path
+            .as_ref()
+            .map_err(Clone::clone)
+            .and_then(|p| storage::load(p));
+        // Proxy recovery is independent of configuration validity: a damaged
+        // settings file must not leave a crashed session's proxy enabled.
+        let recovery_error = recover_proxy().err();
+        let error = loaded.as_ref().err().cloned().or(recovery_error);
+        let writable = error.is_none();
+        Self::model(
+            loaded.unwrap_or_default(),
+            if writable { path.ok() } else { None },
+            error,
+        )
+    }
+
     fn model(settings: Settings, path: Option<PathBuf>, error: Option<String>) -> Self {
         Self {
             page: Page::Connection,
@@ -365,6 +376,14 @@ impl App {
     }
 
     fn receive(&mut self, ctx: &egui::Context) {
+        #[cfg(target_os = "linux")]
+        let check = eivro::domain_dns::check_ranges;
+        #[cfg(not(target_os = "linux"))]
+        let check = || Ok(());
+        self.receive_checked(ctx, check);
+    }
+
+    fn receive_checked(&mut self, ctx: &egui::Context, check: impl FnOnce() -> eivro::Result<()>) {
         if let Some(result) = self.install_result.as_ref().and_then(|r| r.try_recv().ok()) {
             self.install_result = None;
             self.helper_ready = process::helper_compatible();
@@ -457,12 +476,10 @@ impl App {
             match result.and_then(|doc| {
                 let mut next = self.settings.clone();
                 next.apply_document(target, doc)?;
-                let path = self.path.as_deref().ok_or(
+                self.path.as_deref().ok_or(
                     "Сохранение отключено: сначала исправьте файл настроек. Обновление не применено.",
                 )?;
-                storage::save(path, &next)?;
-                self.settings = next;
-                Ok(())
+                self.save_settings_checked(next, check)
             }) {
                 Ok(()) => {
                     if let Some(id) = target {
@@ -548,6 +565,9 @@ impl App {
         if self.want_connected
             && let Some(session) = &mut self.session
         {
+            // A manual change supersedes an in-flight automatic attempt whose
+            // retry deadline has already been consumed. Restart after it stops.
+            self.recovery.cancel();
             session.restart();
             self.stopping = true;
             self.running = false;
@@ -664,7 +684,8 @@ fn network_settings_changed(old: &Settings, next: &Settings) -> bool {
     if old.mode != next.mode
         || old.port != next.port
         || old.kill_switch != next.kill_switch
-        || old.selected_profile().map(|p| &p.uri) != next.selected_profile().map(|p| &p.uri)
+        || old.selected_profile().map(catalog::effective_connection)
+            != next.selected_profile().map(catalog::effective_connection)
         || old_profile.map(|p| (&p.rules, &p.ru_preset))
             != next_profile.map(|p| (&p.rules, &p.ru_preset))
     {
@@ -936,6 +957,35 @@ mod tests {
         }
     }
     #[test]
+    fn startup_recovers_stale_proxy_even_when_settings_cannot_load() {
+        let dir = std::env::temp_dir().join(format!(
+            "eivro-ui-startup-recovery-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = dir.join("settings.json");
+        storage::save(&path, &Settings::default()).unwrap();
+        std::fs::write(&path, b"{damaged settings").unwrap();
+        for source in [
+            Ok(path.clone()),
+            Err("Configuration migration failed".into()),
+        ] {
+            let recovered = std::cell::Cell::new(false);
+            let app = App::load_model(source, || {
+                recovered.set(true);
+                Ok(())
+            });
+            assert!(recovered.get());
+            assert!(app.error.is_some() && app.path.is_none());
+            assert!(app.settings.subscriptions.is_empty());
+            assert_eq!(std::fs::read(&path).unwrap(), b"{damaged settings");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
     fn subscription_changes_are_published_only_after_settings_are_saved() {
         for target in [None, Some(1)] {
             let dir = std::env::temp_dir().join(format!(
@@ -1171,6 +1221,80 @@ mod tests {
             app.error.as_deref(),
             Some("Сохранение отключено: сначала исправьте файл настроек. Обновление не применено.")
         );
+    }
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn subscription_preflight_preserves_live_settings_and_allows_metadata_updates() {
+        for target in [None, Some(1)] {
+            let dir = std::env::temp_dir().join(format!(
+                "eivro-ui-subscription-preflight-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let path = dir.join("settings.json");
+            let original = subscription_document(443);
+            let mut settings = Settings {
+                mode: Mode::Tun,
+                ..Default::default()
+            };
+            settings.apply_document(None, original.clone()).unwrap();
+            storage::save(&path, &settings).unwrap();
+            let bytes = std::fs::read(&path).unwrap();
+            let before = serde_json::to_value(&settings).unwrap();
+            let mut app = App::model(settings, Some(path.clone()), None);
+            app.want_connected = true;
+            app.running = true;
+            app.import_open = target.is_none();
+            app.import_text = "Synthetic input".into();
+            let (tx, rx) = mpsc::channel();
+            app.import_result = Some(rx);
+            app.import_target = target;
+            tx.send(Ok(subscription_document(8443))).unwrap();
+            let now = catalog::now();
+            app.receive_checked(&egui::Context::default(), || {
+                Err("Синтетический конфликт DNS".into())
+            });
+            assert_eq!(serde_json::to_value(&app.settings).unwrap(), before);
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            assert!(app.running && app.want_connected);
+            assert!(!app.stopping && !app.reconnect_pending && app.recovery.due.is_none());
+            let error = if let Some(id) = target {
+                assert!(app.retry_after[&id] >= now + 300);
+                &app.refresh_errors[&id]
+            } else {
+                assert!(app.import_open);
+                assert_eq!(app.import_text, "Synthetic input");
+                app.error.as_ref().unwrap()
+            };
+            assert!(error.contains("Синтетический конфликт DNS"));
+
+            let mut metadata_only = original;
+            metadata_only.metadata.title = "Updated title".into();
+            metadata_only.profiles[0].uri.push_str("#Renamed");
+            let (tx, rx) = mpsc::channel();
+            app.import_result = Some(rx);
+            app.import_target = target;
+            tx.send(Ok(metadata_only)).unwrap();
+            app.receive_checked(&egui::Context::default(), || {
+                panic!("Metadata updates must not require a network preflight")
+            });
+            assert_eq!(app.settings.current().unwrap().name, "Updated title");
+            assert!(app.running && app.want_connected && app.recovery.due.is_none());
+            assert_eq!(
+                serde_json::to_value(storage::load(&path).unwrap()).unwrap(),
+                serde_json::to_value(&app.settings).unwrap()
+            );
+            if let Some(id) = target {
+                assert!(!app.retry_after.contains_key(&id));
+                assert!(!app.refresh_errors.contains_key(&id));
+            } else {
+                assert!(!app.import_open && app.import_text.is_empty());
+            }
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
     #[test]
     fn subscription_refresh_only_reconnects_when_the_selected_connection_changes() {
@@ -1518,6 +1642,28 @@ mod tests {
         wait(&mut app, &ctx, false);
         assert!(!app.want_connected);
         assert!(app.error.as_ref().is_some_and(|e| e.contains("HTTPS")));
+    }
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn switch_during_automatic_connection_attempt_restarts_after_stop() {
+        let ctx = egui::Context::default();
+        let mut app = model();
+        app.want_connected = true;
+        let now = Instant::now();
+        app.recovery.schedule(now);
+        assert!(app.recovery.ready(now + Duration::from_secs(2)));
+        app.start_connection(&ctx);
+        assert!(app.session.is_some() && !app.running);
+        assert!(app.recovery.recovering && app.recovery.due.is_none());
+        app.settings.current_mut().unwrap().selected = 1;
+        app.reconfigure();
+        assert!(app.stopping && app.want_connected);
+        wait(&mut app, &ctx, true);
+        assert_eq!(app.settings.selected_profile().unwrap().name, "Server 2");
+        assert!(!app.stopping && !app.recovery.recovering);
+        app.connect(&ctx);
+        wait(&mut app, &ctx, false);
+        assert!(!app.want_connected);
     }
     #[test]
     #[cfg(target_os = "linux")]

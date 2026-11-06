@@ -154,6 +154,7 @@ def test(original_net, original_mount):
                 copy_binary(BIN / binary, "/usr/libexec/eivro/" + binary, root)
             copy_binary(ROOT / "vendor/sing-box", "/usr/libexec/eivro/sing-box", root)
             copy_binary(Path(shutil.which("ip")), "/usr/bin/ip", root)
+            copy_binary(Path(shutil.which("nft")), "/usr/bin/nft", root)
             copy_binary(Path(shutil.which("sh")), "/bin/sh", root)
             (root / "etc").mkdir()
             (root / "etc/hosts").write_text(
@@ -387,9 +388,14 @@ def test(original_net, original_mount):
             assert os.readlink(f"/proc/{core_pid}/ns/net") == os.readlink(
                 "/proc/self/ns/net"
             )
+            before = flushes()
             os.kill(core_pid, signal.SIGKILL)
             assert reply(helper) == "FAILED"
             wait_gone()
+            assert (
+                flushes() == before + 1
+            ), "Core crash left cached synthetic DNS answers"
+            assert_network_restored(baseline_network)
             send(helper, {"command": "start", "request": request}, "READY")
             assert dns("plain.company.test") == original
             tcp(original, b"UPDATED")
@@ -399,11 +405,32 @@ def test(original_net, original_mount):
             helper.wait(timeout=3)
             helper = None
             wait_gone()
+            assert_network_restored(baseline_network)
             helper = start_helper()
             send(helper, {"command": "start", "request": request}, "READY")
             tcp(original, b"UPDATED")
             assert dns("plain.company.test") == original
             print("Helper crash: RAM state survives and old IP still works", flush=True)
+            # Normal termination signals and GUI-pipe EOF must run cleanup,
+            # including while a core is live, before the helper exits.
+            for termination in [signal.SIGTERM, signal.SIGINT, signal.SIGHUP, None]:
+                before = flushes()
+                if termination is None:
+                    helper.stdin.close()
+                else:
+                    helper.send_signal(termination)
+                assert helper.wait(timeout=8) == 0, termination
+                wait_gone()
+                assert flushes() > before, ("Missing shutdown DNS cleanup", termination)
+                assert_network_restored(baseline_network)
+                assert dns("plain.company.test", "10.50.0.53") == "198.51.100.96"
+                helper = start_helper()
+                send(helper, {"command": "start", "request": request}, "READY")
+                tcp(original, b"UPDATED")
+            print(
+                "TERM/INT/HUP/GUI EOF: core gone, cache flushed, routes and DNS usable",
+                flush=True,
+            )
             saved_policies = request["policies"]
             profile_addresses = {
                 domain: dns(domain)
@@ -500,6 +527,40 @@ def test(original_net, original_mount):
             )
             print(
                 "Conflicting range rejected without changing DNS settings", flush=True
+            )
+            lab.run(
+                "ip",
+                "rule",
+                "add",
+                "priority",
+                "9000",
+                "to",
+                "203.0.113.250/32",
+                "lookup",
+                "main",
+            )
+            occupied = network_snapshot()
+            helper.stdin.write(
+                json.dumps({"command": "start", "request": request}).encode() + b"\n"
+            )
+            helper.stdin.flush()
+            failure = reply(helper)
+            assert failure.startswith("START_ERROR ") and "9000" in failure, failure
+            assert_network_restored(occupied)
+            lab.run(
+                "ip",
+                "rule",
+                "del",
+                "priority",
+                "9000",
+                "to",
+                "203.0.113.250/32",
+                "lookup",
+                "main",
+            )
+            print(
+                "Occupied policy priority: start refused, foreign rule preserved",
+                flush=True,
             )
             cache_files = list((root / "run/eivro-dns").glob("0.cache*"))
             assert len(cache_files) == 1
