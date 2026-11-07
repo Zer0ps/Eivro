@@ -7,6 +7,20 @@ fn main() {
         .take(eivro::MAX_IMPORT as u64 + 1)
         .read_to_end(&mut data)
         .unwrap();
+    if std::env::args().any(|arg| arg == "--catalog") {
+        match eivro::catalog::read_bytes(&data) {
+            Ok(doc) => println!(
+                "Catalog: {} verified, {} unavailable",
+                doc.profiles.len(),
+                doc.unavailable.len()
+            ),
+            Err(e) => {
+                println!("Import rejected: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     let result = match std::str::from_utf8(&data) {
         Ok(text) if text.trim().starts_with("https://") => {
             // Follow the same metadata and core validation path as a UI refresh.

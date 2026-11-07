@@ -717,7 +717,7 @@ dependencies = [
 
 [[package]]
 name = "eivro"
-version = "1.4.1"
+version = "1.5.0"
 dependencies = [
  "base64",
  "eframe",

@@ -191,10 +191,17 @@ pub fn save(path: &Path, settings: &Settings) -> Result<()> {
             .map_err(|_| "Не удалось прочитать прежние настройки.")?;
         let old: serde_json::Value = serde_json::from_slice(&protect(&previous, true)?)
             .map_err(|_| "Прежние настройки повреждены.")?;
-        if old["schema"].as_u64().is_some_and(|schema| schema < 5) {
+        if let Some(schema) = old["schema"]
+            .as_u64()
+            .filter(|schema| *schema < u64::from(crate::storage::SCHEMA))
+        {
             let dir = path.parent().ok_or("Нет каталога настроек.")?;
             private_directory(dir)?;
-            let backup = dir.join("settings-before-1.3.2.dat");
+            let backup = dir.join(if schema == 5 {
+                "settings-before-1.5.0.dat"
+            } else {
+                "settings-before-1.3.2.dat"
+            });
             match OpenOptions::new()
                 .write(true)
                 .create_new(true)

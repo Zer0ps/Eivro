@@ -234,8 +234,11 @@ pub fn parse_outbound(input: &Value) -> Result<Parsed> {
             ],
             "Xray Mux",
         )?;
-        if m.get("enabled").is_some_and(|v| v != false) {
-            return Err("Включённый Xray Mux пока не поддерживается.".into());
+        if m.get("enabled").is_some_and(|v| !v.is_boolean()) {
+            return Err("Xray Mux: enabled должен быть логическим значением.".into());
+        }
+        if m["enabled"] == true && settings["vnext"][0]["users"][0]["flow"] == "xtls-rprx-vision" {
+            return Err("XTLS Vision несовместим с включённым Mux.".into());
         }
     }
     if let Some(stream) = input.get("streamSettings") {
@@ -445,10 +448,16 @@ pub fn parse_uri(uri: &str) -> Result<Parsed> {
     parse_outbound(&v)
 }
 
-pub fn from_vless(v: &Value, q: &BTreeMap<String, String>) -> Result<Value> {
+pub fn from_share(v: &Value, q: &BTreeMap<String, String>, mux: Option<u8>) -> Result<Value> {
     let security = q.get("security").map(String::as_str).unwrap_or("none");
     let t = &v["tls"];
-    let mut tls = json!({"serverName":t["server_name"],"fingerprint":t["utls"]["fingerprint"].as_str().unwrap_or("chrome")});
+    let mut tls = json!({"serverName": t["server_name"]});
+    if let Some(fp) = t["utls"]["fingerprint"].as_str() {
+        tls["fingerprint"] = json!(fp);
+    } else if mux.is_none() {
+        // Preserve the default ClientHello of previously imported XHTTP links.
+        tls["fingerprint"] = json!("chrome");
+    }
     if let Some(alpn) = t.get("alpn") {
         tls["alpn"] = alpn.clone();
     }
@@ -464,6 +473,14 @@ pub fn from_vless(v: &Value, q: &BTreeMap<String, String>) -> Result<Value> {
     let mut stream = json!({"network":network,"security":security});
     match network {
         "tcp" => {}
+        "ws" => {
+            let mut ws = json!({"path": v["transport"]["path"]});
+            if let Some(host) = q.get("host") {
+                ws["host"] = json!(host);
+            }
+            stream["wsSettings"] = ws;
+        }
+        "grpc" => stream["grpcSettings"] = json!({"serviceName":v["transport"]["service_name"]}),
         "xhttp" => {
             let get =
                 |key: &str, default: &str| q.get(key).cloned().unwrap_or_else(|| default.into());
@@ -482,7 +499,16 @@ pub fn from_vless(v: &Value, q: &BTreeMap<String, String>) -> Result<Value> {
     } else {
         "tlsSettings"
     }] = tls;
-    let out = json!({"protocol":"vless","tag":"proxy","settings":{"vnext":[{"address":v["server"],"port":v["server_port"],"users":[{"id":v["uuid"],"encryption":"none","flow":v["flow"].as_str().unwrap_or("")}]}]},"streamSettings":stream});
+    let settings = if v["type"] == "trojan" {
+        json!({"servers":[{"address":v["server"],"port":v["server_port"],"password":v["password"]}]})
+    } else {
+        json!({"vnext":[{"address":v["server"],"port":v["server_port"],"users":[{"id":v["uuid"],"encryption":"none","flow":v["flow"].as_str().unwrap_or("")}]}]})
+    };
+    let mut out =
+        json!({"protocol":v["type"],"tag":"proxy","settings":settings,"streamSettings":stream});
+    if let Some(n) = mux {
+        out["mux"] = json!({"enabled":true,"concurrency":n});
+    }
     Ok(parse_outbound(&out)?.outbound)
 }
 

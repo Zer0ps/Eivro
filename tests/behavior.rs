@@ -135,8 +135,8 @@ fn dormant_xray_mux_hints_do_not_enable_sing_box_multiplex() {
             assert!(actual.get("multiplex").is_none());
         }
         for suffix in [
-            "&mux=true&concurrency=8",
-            "&mux=1",
+            "&mux=true&concurrency=129",
+            "&mux=1&muxConcurrency=-1",
             "&mux=maybe",
             "&concurrency=8&concurrency=4",
             "&concurrency=1.5",

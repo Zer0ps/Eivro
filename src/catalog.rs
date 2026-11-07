@@ -138,6 +138,10 @@ pub struct Subscription {
     pub name: String,
     pub source: Option<String>,
     pub profiles: Vec<Profile>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unavailable: Vec<subscription::Unavailable>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub using_previous: bool,
     pub selected: usize,
     pub metadata: Metadata,
     pub update: UpdatePolicy,
@@ -191,9 +195,13 @@ impl Subscription {
         if !document.metadata.title.is_empty() {
             self.name = document.metadata.title.clone();
         }
-        self.profiles = document.profiles;
+        self.using_previous = document.profiles.is_empty() && !self.profiles.is_empty();
+        if !self.using_previous {
+            self.profiles = document.profiles;
+            self.selected = selected;
+        }
+        self.unavailable = document.unavailable;
         self.metadata = document.metadata;
-        self.selected = selected;
         self.refreshed_at = Some(now);
     }
 }
@@ -202,6 +210,7 @@ pub struct Document {
     pub name: String,
     pub source: Option<String>,
     pub profiles: Vec<Profile>,
+    pub unavailable: Vec<subscription::Unavailable>,
     pub metadata: Metadata,
 }
 impl Document {
@@ -211,6 +220,8 @@ impl Document {
             name: self.name,
             source: self.source,
             profiles: self.profiles,
+            unavailable: self.unavailable,
+            using_previous: false,
             selected: 0,
             metadata: self.metadata,
             update: UpdatePolicy::Provider,
@@ -226,30 +237,87 @@ pub fn now() -> u64 {
 }
 pub fn read_input(input: &str) -> Result<Document> {
     let input = input.trim();
-    let (profiles, metadata, source, fallback) = if input.starts_with("https://") {
+    let (batch, source, fallback) = if input.starts_with("https://") {
         let source = source_url(input)?;
         let response = import::download_document(&source)?;
-        let (profiles, mut metadata) = subscription::import_document(&response.body)?;
+        let mut batch = subscription::decode_document(&response.body, true)?;
         for (key, value) in response.headers {
-            metadata.apply(&key, &value);
+            batch.metadata.apply(&key, &value);
         }
         let name = url::Url::parse(&source)
             .ok()
             .and_then(|u| u.host_str().map(str::to_owned))
             .unwrap_or_else(|| "Подписка".into());
-        (profiles, metadata, Some(source), name)
+        (batch, Some(source), name)
     } else if Path::new(input).is_absolute() && !input.contains('\n') {
-        let (profiles, metadata) = subscription::import_file_document(Path::new(input))?;
+        let batch = subscription::file_batch(Path::new(input), true)?;
         let name = Path::new(input)
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("Файл");
-        (profiles, metadata, None, text(name, 80, false))
+        (batch, None, text(name, 80, false))
     } else {
-        let (profiles, metadata) = subscription::import_document(input.as_bytes())?;
-        (profiles, metadata, None, "Вручную".into())
+        return read_bytes(input.as_bytes());
     };
-    crate::process::validate_profiles(&profiles)?;
+    prepare_document(batch, source, fallback)
+}
+
+pub fn read_bytes(data: &[u8]) -> Result<Document> {
+    prepare_document(
+        subscription::decode_document(data, true)?,
+        None,
+        "Вручную".into(),
+    )
+}
+
+/// Re-evaluate the private saved records after a client/core upgrade. Treat
+/// each record as data: no stored string may become a file path or fetch URL.
+pub fn retry_local(sub: &Subscription) -> Result<Document> {
+    if sub.source.is_some() {
+        return Err("Используйте обновление подписки.".into());
+    }
+    let mut batch = subscription::Batch {
+        profiles: sub.profiles.clone(),
+        metadata: sub.metadata.clone(),
+        ..Default::default()
+    };
+    for entry in &sub.unavailable {
+        match subscription::decode_document(entry.input.as_bytes(), true) {
+            Ok(mut parsed) if parsed.profiles.len() == 1 && parsed.unavailable.is_empty() => {
+                let mut profile = parsed.profiles.pop().expect("one profile");
+                profile.name.clone_from(&entry.name);
+                if !batch.profiles.iter().any(|p| p.uri == profile.uri) {
+                    batch.profiles.push(profile);
+                }
+            }
+            _ => batch.unavailable.push(entry.clone()),
+        }
+    }
+    prepare_document(batch, None, sub.name.clone())
+}
+
+fn prepare_document(
+    mut batch: subscription::Batch,
+    source: Option<String>,
+    fallback: String,
+) -> Result<Document> {
+    let rejected = crate::process_profiles::rejected_profiles(&batch.profiles)?;
+    let mut rejected = rejected
+        .into_iter()
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut profiles = Vec::with_capacity(batch.profiles.len() - rejected.len());
+    for (i, profile) in batch.profiles.into_iter().enumerate() {
+        if let Some(reason) = rejected.remove(&i) {
+            batch.unavailable.push(subscription::Unavailable {
+                name: profile.name,
+                input: profile.uri,
+                reason,
+            });
+        } else {
+            profiles.push(profile);
+        }
+    }
+    let metadata = batch.metadata;
     let name = if metadata.title.is_empty() {
         fallback
     } else {
@@ -259,6 +327,7 @@ pub fn read_input(input: &str) -> Result<Document> {
         name,
         source,
         profiles,
+        unavailable: batch.unavailable,
         metadata,
     })
 }

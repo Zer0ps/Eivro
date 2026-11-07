@@ -21,6 +21,7 @@ impl App {
         let mut changed = false;
         let mut choose = None;
         let mut refresh = None;
+        let mut retry = None;
         let mut remove = None;
         egui::ScrollArea::vertical()
             .id_salt("subscriptions-page")
@@ -237,6 +238,42 @@ impl App {
                                     }
                                 });
                             }
+                            if sub.using_previous {
+                                ui.label(
+                                    RichText::new("Используется предыдущий список серверов.")
+                                        .color(p.muted),
+                                );
+                            }
+                            if !sub.unavailable.is_empty() {
+                                egui::CollapsingHeader::new(format!(
+                                    "Недоступные профили · {}",
+                                    sub.unavailable.len()
+                                ))
+                                .id_salt(("unavailable-profiles", sub.id))
+                                .show(ui, |ui| {
+                                    for entry in &sub.unavailable {
+                                        ui.label(crate::emoji::text(&entry.name));
+                                        ui.label(
+                                            RichText::new(entry.reason.description())
+                                                .small()
+                                                .color(p.muted),
+                                        );
+                                    }
+                                    if sub.source.is_none()
+                                        && enabled_command(
+                                            ui,
+                                            self.import_result.is_none(),
+                                            "Перепроверить",
+                                            ButtonTone::Secondary,
+                                            Vec2::ZERO,
+                                            p,
+                                        )
+                                        .clicked()
+                                    {
+                                        retry = Some(sub.clone());
+                                    }
+                                });
+                            }
                             if let Some(error) = self.refresh_errors.get(&sub.id) {
                                 ui.add_space(8.0);
                                 ui.colored_label(p.error, error);
@@ -293,6 +330,9 @@ impl App {
             self.catalog_open = true;
             self.catalog_focus = Some(id);
             self.server_filter.clear();
+        }
+        if let Some(sub) = retry {
+            self.import_job(Some(sub.id), ctx, move || catalog::retry_local(&sub));
         }
         if let Some((id, url)) = refresh {
             self.start_job(url, Some(id), ctx);

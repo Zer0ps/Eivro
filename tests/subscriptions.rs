@@ -90,9 +90,9 @@ fn zip_gzip_and_tar_are_detected_by_bytes() {
 #[test]
 fn archive_wrapped_config_errors_do_not_drop_servers() {
     use base64::{Engine, engine::general_purpose::STANDARD};
-    let invalid = "vless://a3ba7b44-3275-42e7-9a54-30aa2bde0437@edge.example:443?security=tls&type=tcp&mux=true#Unsupported";
+    let invalid = "vless://a3ba7b44-3275-42e7-9a54-30aa2bde0437@edge.example:443?security=tls&type=tcp&mux=invalid#Unsupported";
     let commented = format!("#profile-title: Provider\n{invalid}");
-    let corrupt_utf8 = [invalid.replace("&mux=true", "").as_bytes(), &[0xff]].concat();
+    let corrupt_utf8 = [invalid.replace("&mux=invalid", "").as_bytes(), &[0xff]].concat();
     let payloads = [
         format!("\u{feff}{invalid}"),
         commented.clone(),
@@ -272,7 +272,7 @@ fn concurrency_links_import_from_plain_base64_json_and_archives() {
     }
     let invalid = format!(
         "{text}\n{}",
-        text.replace("concurrency=8", "mux=true&concurrency=8")
+        text.replace("concurrency=8", "mux=true&concurrency=8&muxConcurrency=4")
     );
     assert!(import_bytes(invalid.as_bytes()).is_err());
 }

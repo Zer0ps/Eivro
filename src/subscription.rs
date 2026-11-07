@@ -2,7 +2,7 @@
 //! are never passed to the core; supported endpoints are normalized to share links.
 use crate::{
     MAX_IMPORT, Result,
-    import::{Profile, import_text, parse_uri},
+    import::{Profile, parse_uri},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
@@ -16,9 +16,43 @@ const MAX_FILES: usize = 32;
 const MAX_DEPTH: usize = 3;
 const MAX_BASE64_LAYERS: usize = 2;
 
+/// Opaque endpoint data is never passed to either core, including on settings load.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Unavailable {
+    pub name: String,
+    pub input: String,
+    pub reason: UnavailableReason,
+}
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnavailableReason {
+    MissingCore,
+    Format,
+    Core,
+}
+impl UnavailableReason {
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Format => "Формат или параметры пока не поддерживаются",
+            Self::Core => "Конфигурация не прошла проверку ядром",
+            Self::MissingCore => "Для профиля требуется доступное ядро из пакета Eivro",
+        }
+    }
+}
+#[derive(Default)]
+pub(crate) struct Batch {
+    pub profiles: Vec<Profile>,
+    pub unavailable: Vec<Unavailable>,
+    pub metadata: crate::catalog::Metadata,
+}
 #[derive(Default)]
 struct Budget {
     files: usize,
+    entries: usize,
+    tolerant: bool,
+    recognized: bool,
+    unavailable: Vec<Unavailable>,
     expanded: usize,
     metadata: crate::catalog::Metadata,
 }
@@ -27,20 +61,124 @@ pub fn import_bytes(data: &[u8]) -> Result<Vec<Profile>> {
     Ok(import_document(data)?.0)
 }
 pub fn import_document(data: &[u8]) -> Result<(Vec<Profile>, crate::catalog::Metadata)> {
+    let batch = decode_document(data, false)?;
+    Ok((batch.profiles, batch.metadata))
+}
+
+pub(crate) fn decode_document(data: &[u8], tolerant: bool) -> Result<Batch> {
     if data.len() > MAX_IMPORT {
         return Err("Подписка больше 2 МиБ.".into());
     }
-    let mut budget = Budget::default();
+    let mut budget = Budget {
+        tolerant,
+        ..Budget::default()
+    };
     let mut profiles = parse(data, 0, &mut budget)?;
     let mut seen = std::collections::HashSet::new();
     profiles.retain(|p| seen.insert(p.uri.clone()));
-    if profiles.is_empty() {
+    if profiles.is_empty() && (budget.unavailable.is_empty() || !budget.recognized) {
         return Err("В подписке не найдено поддерживаемых серверов.".into());
     }
     if profiles.len() > 256 {
         return Err("В подписке больше 256 серверов.".into());
     }
-    Ok((profiles, budget.metadata))
+    let mut seen = std::collections::HashSet::new();
+    budget.unavailable.retain(|p| seen.insert(p.input.clone()));
+    Ok(Batch {
+        profiles,
+        unavailable: budget.unavailable,
+        metadata: budget.metadata,
+    })
+}
+
+impl Budget {
+    fn entry(&mut self) -> Result<()> {
+        self.entries += 1;
+        if self.entries > 256 {
+            return Err("Максимум 256 записей в подписке.".into());
+        }
+        Ok(())
+    }
+    fn preserve(&mut self, input: String, name: &str, error: String) -> Result<()> {
+        if !self.tolerant {
+            return Err(error);
+        }
+        if input.len() > 65536 {
+            return Err("Слишком большая запись подписки.".into());
+        }
+        let name = clean(name);
+        self.unavailable.push(Unavailable {
+            name: if name.trim().is_empty() {
+                format!("Запись {}", self.entries)
+            } else {
+                name
+            },
+            input,
+            reason: UnavailableReason::Format,
+        });
+        Ok(())
+    }
+}
+
+// Recognize other common configuration documents as private, inert data.
+// Never follow their URLs, file references, or scripts.
+fn other_configuration(text: &str) -> bool {
+    if text.starts_with("[Interface]") || text.starts_with("[Peer]") {
+        return text.lines().any(|l| l.trim() == "[Interface]")
+            && text.lines().any(|l| l.trim() == "[Peer]");
+    }
+    if text.starts_with(['{', '[']) {
+        return false;
+    }
+    (text.lines().any(|l| l.trim() == "client")
+        && text.lines().any(|l| l.trim_start().starts_with("remote ")))
+        || text
+            .lines()
+            .any(|l| matches!(l.trim_end(), "proxies:" | "proxy-providers:"))
+}
+
+fn profile_link(text: &str) -> bool {
+    let Some((scheme, rest)) = text.split_once("://") else {
+        return false;
+    };
+    scheme.len() <= 32
+        && !rest.is_empty()
+        && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+        && scheme
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"+.-".contains(&c))
+        && !["https", "http", "file", "javascript", "data"]
+            .iter()
+            .any(|s| scheme.eq_ignore_ascii_case(s))
+}
+
+fn links(text: &str, budget: &mut Budget) -> Result<Vec<Profile>> {
+    let mut profiles = Vec::new();
+    for (i, line) in text
+        .lines()
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !s.starts_with('#'))
+        .enumerate()
+    {
+        budget.entry()?;
+        budget.recognized |= profile_link(line);
+        match parse_uri(line) {
+            Ok(parsed) => profiles.push(Profile {
+                name: parsed.name,
+                uri: line.to_owned(),
+            }),
+            Err(e) => {
+                let error = format!("Строка {}: {e}", i + 1);
+                if !budget.tolerant {
+                    return Err(error);
+                }
+                let label = line.split_once('#').map_or("", |(_, fragment)| fragment);
+                let name = percent_encoding::percent_decode_str(label).decode_utf8_lossy();
+                budget.preserve(line.to_owned(), &name, error)?;
+            }
+        }
+    }
+    Ok(profiles)
 }
 
 fn read_limited(reader: impl Read, budget: &mut Budget) -> Result<Vec<u8>> {
@@ -65,6 +203,16 @@ fn text_payload(text: &str) -> String {
         .join("\n")
 }
 
+pub(crate) fn strict_links(text: &str) -> Result<Vec<Profile>> {
+    let mut profiles = links(text, &mut Budget::default())?;
+    if profiles.is_empty() {
+        return Err("Не найдено серверов.".into());
+    }
+    let mut seen = std::collections::HashSet::new();
+    profiles.retain(|p| seen.insert(p.uri.clone()));
+    Ok(profiles)
+}
+
 fn recognizable_text(text: &str) -> Result<bool> {
     let mut payload = text_payload(text);
     // Probe the same bounded wrappers as parse() so malformed configurations
@@ -72,6 +220,7 @@ fn recognizable_text(text: &str) -> Result<bool> {
     for layer in 0..=MAX_BASE64_LAYERS {
         let text = payload.trim();
         if text.starts_with(['{', '['])
+            || text.lines().any(|s| profile_link(s.trim()))
             || [
                 "vless://",
                 "vmess://",
@@ -110,7 +259,11 @@ fn member(name: &str, data: &[u8], depth: usize, budget: &mut Budget) -> Result<
         return Err("В архиве больше 32 файлов.".into());
     }
     let lower = name.to_ascii_lowercase();
-    if lower.ends_with(".json")
+    if (budget.tolerant
+        && [".yaml", ".yml", ".ovpn"]
+            .iter()
+            .any(|ext| lower.ends_with(ext)))
+        || lower.ends_with(".json")
         || lower.ends_with(".conf")
         || lower.ends_with(".zip")
         || lower.ends_with(".gz")
@@ -205,13 +358,37 @@ fn parse(data: &[u8], depth: usize, budget: &mut Budget) -> Result<Vec<Profile>>
         if content.starts_with('<') {
             return Err("Сервис вернул HTML/XML-страницу вместо подписки. Проверьте ссылку и доступ у провайдера.".into());
         }
+        if budget.tolerant && other_configuration(content) {
+            budget.entry()?;
+            budget.recognized = true;
+            budget.preserve(
+                content.to_owned(),
+                "",
+                "Этот формат пока нельзя подключить.".into(),
+            )?;
+            return Ok(Vec::new());
+        }
         if content.starts_with(['{', '[']) {
-            let json: Value =
-                serde_json::from_str(content).map_err(|_| "Некорректный JSON подписки.")?;
-            return json_profiles(&json, 0);
+            let json: Value = match serde_json::from_str(content) {
+                Ok(v) => v,
+                Err(_) if budget.tolerant && depth > 0 => {
+                    budget.entry()?;
+                    budget.preserve(
+                        content.to_owned(),
+                        "",
+                        "Некорректный JSON в архиве.".into(),
+                    )?;
+                    return Ok(Vec::new());
+                }
+                Err(_) => return Err("Некорректный JSON подписки.".into()),
+            };
+            return json_profiles(&json, 0, budget);
         }
         if content.contains("://") {
-            return import_text(content);
+            if !content.lines().any(|line| profile_link(line.trim())) {
+                return Err("Нет ссылок на серверы в подписке.".into());
+            }
+            return links(content, budget);
         }
         if layer == MAX_BASE64_LAYERS {
             break;
@@ -230,6 +407,11 @@ pub fn import_file(path: &Path) -> Result<Vec<Profile>> {
     Ok(import_file_document(path)?.0)
 }
 pub fn import_file_document(path: &Path) -> Result<(Vec<Profile>, crate::catalog::Metadata)> {
+    let batch = file_batch(path, false)?;
+    Ok((batch.profiles, batch.metadata))
+}
+
+pub(crate) fn file_batch(path: &Path, tolerant: bool) -> Result<Batch> {
     let f = std::fs::File::open(path).map_err(|_| "Не удалось открыть файл подписки.")?;
     if !f
         .metadata()
@@ -239,7 +421,7 @@ pub fn import_file_document(path: &Path) -> Result<(Vec<Profile>, crate::catalog
         return Err("Выберите обычный файл.".into());
     }
     let data = read_limited(f, &mut Budget::default())?;
-    import_document(&data)
+    decode_document(&data, tolerant)
 }
 
 fn string<'a>(v: &'a Value, key: &str) -> &'a str {
@@ -260,7 +442,7 @@ fn allowed(v: &Value, fields: &[&str]) -> Result<()> {
     Ok(())
 }
 
-fn json_profiles(v: &Value, depth: usize) -> Result<Vec<Profile>> {
+fn json_profiles(v: &Value, depth: usize, budget: &mut Budget) -> Result<Vec<Profile>> {
     if depth > 5 {
         return Err("JSON слишком глубоко вложен.".into());
     }
@@ -270,33 +452,56 @@ fn json_profiles(v: &Value, depth: usize) -> Result<Vec<Profile>> {
             return Err("В JSON больше 256 записей.".into());
         }
         for item in list {
-            out.extend(json_profiles(item, depth + 1)?);
+            out.extend(json_profiles(item, depth + 1, budget)?);
             if out.len() > 256 {
                 return Err("Слишком много серверов.".into());
             }
         }
     } else if let Some(text) = v.as_str() {
-        out = import_text(text)?;
+        if let Some(decoded) = (!text.contains("://"))
+            .then(|| crate::catalog::decode_base64(text))
+            .flatten()
+        {
+            out = links(&decoded, budget)?;
+        } else {
+            out = links(text, budget)?;
+        }
     } else if let Some(list) = v.get("outbounds").filter(|_| v.get("type").is_none()) {
-        out = json_profiles(list, depth + 1)?;
+        let before = budget.unavailable.len();
+        out = json_profiles(list, depth + 1, budget)?;
+        if out.is_empty()
+            && budget.unavailable.len() == before + 1
+            && !string(v, "remarks").is_empty()
+        {
+            budget.unavailable[before].name = clean(string(v, "remarks"));
+        }
         if out.len() == 1 && !string(v, "remarks").is_empty() {
             out[0].name = clean(string(v, "remarks"));
         }
     } else if let Some(list) = v.get("configs") {
-        out = json_profiles(list, depth + 1)?;
-    } else if v.get("protocol").is_some() {
-        if let Some(profile) = xray(v)? {
-            out.push(profile);
-        }
-    } else if v.get("type").is_some() {
-        if let Some(profile) = singbox(v)? {
-            out.push(profile);
-        }
+        out = json_profiles(list, depth + 1, budget)?;
     } else {
-        return Err(
-            "Неизвестная схема JSON. Поддерживаются outbounds Xray/sing-box и массив конфигураций."
-                .into(),
-        );
+        budget.recognized |= ["protocol", "type", "server", "address", "endpoint", "peers"]
+            .iter()
+            .any(|key| v.get(key).is_some());
+        let entry = if v.get("protocol").is_some() {
+            xray(v)
+        } else if v.get("type").is_some() {
+            singbox(v)
+        } else {
+            Err("Неизвестная схема записи JSON.".into())
+        };
+        match entry {
+            Ok(None) => {}
+            Ok(Some(profile)) => {
+                budget.entry()?;
+                out.push(profile);
+            }
+            Err(e) => {
+                budget.entry()?;
+                budget.preserve(v.to_string(), string(v, "tag"), e)?;
+            }
+        }
     }
     Ok(out)
 }

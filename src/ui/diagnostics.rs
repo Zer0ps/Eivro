@@ -616,6 +616,7 @@ mod tests {
             .apply_document(
                 None,
                 catalog::Document {
+                    unavailable: vec![],
                     name: "Synthetic".into(),
                     source: None,
                     profiles: vec![eivro::import::Profile {

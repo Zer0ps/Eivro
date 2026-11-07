@@ -499,6 +499,9 @@ impl App {
                 .settings
                 .selected_profile()
                 .map(catalog::effective_connection);
+            let only_unavailable = result
+                .as_ref()
+                .is_ok_and(|doc| doc.profiles.is_empty() && !doc.unavailable.is_empty());
             match result.and_then(|doc| {
                 let mut next = self.settings.clone();
                 next.apply_document(target, doc)?;
@@ -515,6 +518,7 @@ impl App {
                         self.import_text.clear();
                         self.import_open = false;
                         self.import_reveal = false;
+                        if only_unavailable { self.page = Page::Subscriptions; }
                     }
                     if previous
                         != self
@@ -537,6 +541,15 @@ impl App {
         }
     }
     fn start_job(&mut self, input: String, target: Option<u64>, ctx: &egui::Context) {
+        self.import_job(target, ctx, move || catalog::read_input(&input));
+    }
+
+    fn import_job(
+        &mut self,
+        target: Option<u64>,
+        ctx: &egui::Context,
+        job: impl FnOnce() -> eivro::Result<Document> + Send + 'static,
+    ) {
         if self.import_result.is_some() {
             return;
         }
@@ -545,7 +558,7 @@ impl App {
         self.import_target = target;
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let result = catalog::read_input(&input);
+            let result = job();
             let _ = tx.send(result);
             ctx.request_repaint();
         });
@@ -971,6 +984,7 @@ mod tests {
             .apply_document(
                 None,
                 Document {
+                    unavailable: vec![],
                     name: "Synthetic".into(),
                     source: None,
                     profiles,
@@ -982,6 +996,7 @@ mod tests {
     }
     fn subscription_document(port: u16) -> Document {
         Document {
+            unavailable: vec![],
             name: "Synthetic".into(),
             source: Some("https://provider.example/sub/synthetic".into()),
             profiles: (0..2)

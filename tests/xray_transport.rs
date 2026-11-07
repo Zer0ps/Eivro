@@ -324,3 +324,104 @@ fn tcp_reality_links_transfer_data_through_the_eivro_session() {
         assert!(TcpListener::bind(("127.0.0.1", local_port)).is_ok());
     }
 }
+
+#[test]
+fn websocket_mux_link_carries_concurrent_streams_with_verified_tls() {
+    let keys = Command::new("openssl")
+        .args([
+            "req",
+            "-x509",
+            "-newkey",
+            "ec",
+            "-pkeyopt",
+            "ec_paramgen_curve:prime256v1",
+            "-nodes",
+            "-days",
+            "1",
+            "-keyout",
+            "-",
+            "-out",
+            "-",
+            "-subj",
+            "/CN=mux.example",
+            "-addext",
+            "subjectAltName=DNS:mux.example",
+        ])
+        .output()
+        .unwrap();
+    assert!(keys.status.success());
+    let pem = String::from_utf8(keys.stdout).unwrap();
+    let block = |kind: &str| {
+        let begin = format!("-----BEGIN {kind}-----");
+        let end = format!("-----END {kind}-----");
+        let text = &pem[pem.find(&begin).unwrap()..];
+        text[..text.find(&end).unwrap() + end.len()]
+            .lines()
+            .collect::<Vec<_>>()
+    };
+    let cert = block("CERTIFICATE");
+    let target = listener();
+    let target_port = target.local_addr().unwrap().port();
+    let remote = listener();
+    let port = remote.local_addr().unwrap().port();
+    let _server = start(
+        json!({
+            "log":{"loglevel":"none"}, "inbounds":[{"listen":"127.0.0.1","port":port,"protocol":"vless",
+            "settings":{"clients":[{"id":UUID}],"decryption":"none"},"streamSettings":{
+                "network":"ws","security":"tls","wsSettings":{"path":"/edge","host":"mux.example"},
+                "tlsSettings":{"alpn":["http/1.1"],"certificates":[{"certificate":cert,"key":block("PRIVATE KEY")}]}}}],
+            "outbounds":[{"protocol":"freedom","settings":{"finalRules":[{"action":"allow",
+            "network":"tcp","ip":["127.0.0.1/32"],"port":target_port}]}}]
+        }),
+        remote,
+    );
+    let link = format!(
+        "vless://{UUID}@127.0.0.1:{port}?security=tls&type=ws&sni=mux.example&host=mux.example&path=%2Fedge&alpn=http%2F1.1&fp=chrome&mux=true&muxConcurrency=8"
+    );
+    let mut outbound = eivro::import::parse_uri(&link).unwrap().outbound;
+    // The local lab trusts its ephemeral certificate only in this client process.
+    outbound["streamSettings"]["tlsSettings"]["certificates"] =
+        json!([{"usage":"verify","certificate":cert}]);
+    let bridge = listener();
+    let local_port = bridge.local_addr().unwrap().port();
+    let _client = start(xray::config(outbound, local_port), bridge);
+    let requests = (0..2)
+        .map(|_| {
+            Command::new("curl")
+                .args([
+                    "--disable",
+                    "--silent",
+                    "--fail",
+                    "--max-time",
+                    "7",
+                    "--noproxy",
+                    "",
+                    "--proxy",
+                    &format!("socks5h://127.0.0.1:{local_port}"),
+                    &format!("http://127.0.0.1:{target_port}/"),
+                ])
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    for _ in 0..requests.len() {
+        let mut stream = accept(&target);
+        let mut headers = Vec::new();
+        while !headers.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            stream.read_exact(&mut byte).unwrap();
+            headers.push(byte[0]);
+            assert!(headers.len() < 4096);
+        }
+        assert!(headers.starts_with(b"GET / HTTP/1.1\r\n"));
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            .unwrap();
+    }
+    for request in requests {
+        let response = request.wait_with_output().unwrap();
+        assert!(response.status.success());
+        assert_eq!(response.stdout, b"ok");
+    }
+}

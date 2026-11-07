@@ -97,6 +97,9 @@ impl App {
                             && sub.selected < sub.profiles.len()
                         {
                             sub.profiles.remove(sub.selected);
+                            if sub.profiles.is_empty() {
+                                sub.using_previous = false;
+                            }
                             sub.selected = 0;
                         }
                         if self.commit(next) {

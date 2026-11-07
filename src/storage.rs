@@ -6,9 +6,9 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 #[cfg(target_os = "linux")]
-pub const SCHEMA: u32 = 6;
+pub const SCHEMA: u32 = 7;
 #[cfg(not(target_os = "linux"))]
-pub const SCHEMA: u32 = 5;
+pub const SCHEMA: u32 = 6;
 #[cfg(unix)]
 use std::{
     fs::{self, File, OpenOptions},
@@ -111,6 +111,8 @@ impl Settings {
                 source: None,
                 profiles: std::mem::take(&mut self.profiles),
                 selected: self.selected,
+                unavailable: vec![],
+                using_previous: false,
                 metadata: Default::default(),
                 update: crate::catalog::UpdatePolicy::Manual,
                 refreshed_at: None,
@@ -178,7 +180,7 @@ impl Settings {
         target: Option<u64>,
         document: crate::catalog::Document,
     ) -> Result<()> {
-        if document.profiles.is_empty() {
+        if document.profiles.is_empty() && document.unavailable.is_empty() {
             return Err("В обновлении нет серверов; прежний список сохранён.".into());
         }
         let mut next = self.clone();
@@ -217,7 +219,7 @@ impl Settings {
             || self
                 .subscriptions
                 .iter()
-                .map(|s| s.profiles.len())
+                .map(|s| s.profiles.len() + s.unavailable.len())
                 .sum::<usize>()
                 > 2048
         {
@@ -283,6 +285,17 @@ impl Settings {
                 return Err("Интервал: от 1 до 720 часов.".into());
             }
             sub.metadata.validate()?;
+            if sub.unavailable.len() > 256
+                || (sub.using_previous && sub.profiles.is_empty())
+                || sub.unavailable.iter().any(|p| {
+                    p.input.is_empty()
+                        || p.input.len() > 65536
+                        || p.name.chars().count() > 80
+                        || p.name.chars().any(char::is_control)
+                })
+            {
+                return Err("Некорректные сохранённые записи подписки.".into());
+            }
             if sub.profiles.len() > 256
                 || (!sub.profiles.is_empty() && sub.selected >= sub.profiles.len())
             {
@@ -508,17 +521,21 @@ mod file {
         if old_schema >= u64::from(SCHEMA) {
             return Ok(());
         }
-        let backup = dir.join(if old_schema == 5 {
-            "settings-before-1.3.4.json"
-        } else if old_schema == 4 {
-            "settings-before-1.3.2.json"
-        } else if old_schema == 3 {
-            "settings-before-1.1.json"
-        } else if old_schema == 1 {
-            "settings-before-alpha.json"
-        } else {
-            "settings-before-alpha2.json"
-        });
+        let backup = dir.join(
+            if old_schema == 6 || (cfg!(target_os = "macos") && old_schema == 5) {
+                "settings-before-1.5.0.json"
+            } else if old_schema == 5 {
+                "settings-before-1.3.4.json"
+            } else if old_schema == 4 {
+                "settings-before-1.3.2.json"
+            } else if old_schema == 3 {
+                "settings-before-1.1.json"
+            } else if old_schema == 1 {
+                "settings-before-alpha.json"
+            } else {
+                "settings-before-alpha2.json"
+            },
+        );
         match OpenOptions::new()
             .write(true)
             .create_new(true)

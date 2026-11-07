@@ -138,6 +138,11 @@ pub(crate) fn tls(q: &BTreeMap<String, String>, host: &str, security: &str) -> R
 
 fn transport(q: &BTreeMap<String, String>, out: &mut Value) -> Result<()> {
     let kind = q.get("type").map_or("tcp", String::as_str);
+    if q.get("headerType")
+        .is_some_and(|v| !v.is_empty() && v != "none")
+    {
+        return Err("Неподдерживаемый headerType транспорта.".into());
+    }
     if q.contains_key("extra") || q.get("mode").is_some_and(|s| kind != "grpc" || s != "gun") {
         return Err("Параметры mode/extra не соответствуют выбранному транспорту.".into());
     }
@@ -175,23 +180,31 @@ fn transport(q: &BTreeMap<String, String>, out: &mut Value) -> Result<()> {
     Ok(())
 }
 
-fn xray_mux(q: &BTreeMap<String, String>) -> Result<()> {
-    match q.get("mux").map(String::as_str) {
-        None | Some("0" | "false") => {}
-        Some("1" | "true") => {
-            return Err("Xray Mux включён в ссылке и пока не поддерживается.".into());
-        }
+fn xray_mux(q: &BTreeMap<String, String>) -> Result<Option<u8>> {
+    let enabled = match q.get("mux").map(String::as_str) {
+        None | Some("0" | "false") => false,
+        Some("1" | "true") => true,
         _ => return Err("Параметр mux должен быть true/false или 1/0.".into()),
+    };
+    let number = |key: &str| {
+        q.get(key)
+            .map(|v| v.parse::<i32>())
+            .transpose()
+            .map_err(|_| "Параметр параллелизма Mux должен быть целым числом.".to_string())
+    };
+    let standard = number("concurrency")?;
+    let alias = number("muxConcurrency")?;
+    if standard.zip(alias).is_some_and(|(a, b)| a != b) {
+        return Err("Параметры параллелизма Mux противоречат друг другу.".into());
     }
-    if q.get("concurrency")
-        .is_some_and(|value| value.parse::<i32>().is_err())
-    {
-        return Err("Параметр concurrency должен быть целым числом.".into());
+    if !enabled {
+        return Ok(None);
     }
-    // Xray defaults mux.enabled to false. Exporters may include its dormant
-    // concurrency setting anyway. It does not enable multiplexing by itself;
-    // sing-box multiplex uses a different wire protocol and is not a substitute.
-    Ok(())
+    match alias.or(standard).unwrap_or(0) {
+        0 => Ok(Some(8)),
+        n @ 1..=128 => Ok(Some(n as u8)),
+        _ => Err("Для включённого TCP Mux допустим параллелизм от 1 до 128.".into()),
+    }
 }
 
 pub fn parse_uri(uri: &str) -> Result<Parsed> {
@@ -281,6 +294,7 @@ pub fn parse_uri(uri: &str) -> Result<Parsed> {
             "obfs-password",
             "mux",
             "concurrency",
+            "muxConcurrency",
             "mode",
             "extra",
         ]
@@ -327,6 +341,7 @@ pub fn parse_uri(uri: &str) -> Result<Parsed> {
             "insecure",
             "mux",
             "concurrency",
+            "muxConcurrency",
             "mode",
             "extra",
         ],
@@ -345,6 +360,7 @@ pub fn parse_uri(uri: &str) -> Result<Parsed> {
             "insecure",
             "mux",
             "concurrency",
+            "muxConcurrency",
             "mode",
         ],
         "hysteria2" => &[
@@ -362,9 +378,7 @@ pub fn parse_uri(uri: &str) -> Result<Parsed> {
     if q.keys().any(|k| !allowed.contains(&k.as_str())) {
         return Err("Параметры не поддерживаются для этого протокола.".into());
     }
-    if matches!(protocol, "vless" | "trojan") {
-        xray_mux(&q)?;
-    }
+    let mux = xray_mux(&q)?;
     if !u.path().is_empty() && u.path() != "/" {
         return Err(
             "Путь транспорта передаётся параметром path, а не после адреса сервера.".into(),
@@ -403,14 +417,16 @@ pub fn parse_uri(uri: &str) -> Result<Parsed> {
                 {
                     return Err("XHTTP: параметры другого транспорта.".into());
                 }
-                out = crate::xray::from_vless(&out, &q)?;
+                out = crate::xray::from_share(&out, &q, mux)?;
                 engine = EngineKind::Xray;
             } else {
                 transport(&q, &mut out)?;
                 // Current Xray Reality servers require a ClientHello that our
                 // sing-box core does not send. Reuse the existing Xray bridge.
-                if security == "reality" && q.get("type").is_none_or(|v| v == "tcp") {
-                    out = crate::xray::from_vless(&out, &q)?;
+                if mux.is_some()
+                    || (security == "reality" && q.get("type").is_none_or(|v| v == "tcp"))
+                {
+                    out = crate::xray::from_share(&out, &q, mux)?;
                     engine = EngineKind::Xray;
                 }
             }
@@ -422,6 +438,10 @@ pub fn parse_uri(uri: &str) -> Result<Parsed> {
             out["password"] = json!(user);
             out["tls"] = tls(&q, &host, q.get("security").map_or("tls", String::as_str))?;
             transport(&q, &mut out)?;
+            if mux.is_some() {
+                out = crate::xray::from_share(&out, &q, mux)?;
+                engine = EngineKind::Xray;
+            }
         }
         "shadowsocks" => {
             if !q.is_empty() {
@@ -601,28 +621,7 @@ pub fn import_text(text: &str) -> Result<Vec<Profile>> {
     } else {
         text
     };
-    let mut result: Vec<Profile> = Vec::new();
-    for (i, line) in text
-        .lines()
-        .filter(|s| !s.trim().is_empty() && !s.trim().starts_with('#'))
-        .enumerate()
-    {
-        if i >= 256 {
-            return Err("Максимум 256 серверов в подписке.".into());
-        }
-        let uri = line.trim();
-        let parsed = parse_uri(uri).map_err(|e| format!("Строка {}: {e}", i + 1))?;
-        if !result.iter().any(|p| p.uri == uri) {
-            result.push(Profile {
-                name: parsed.name,
-                uri: uri.into(),
-            });
-        }
-    }
-    if result.is_empty() {
-        return Err("Не найдено серверов.".into());
-    }
-    Ok(result)
+    crate::subscription::strict_links(text)
 }
 
 pub fn fetch_subscription(input: &str) -> Result<Vec<Profile>> {

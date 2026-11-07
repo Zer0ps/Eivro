@@ -15,6 +15,7 @@ fn profile(name: &str, port: u16) -> Profile {
 }
 fn document() -> Document {
     Document {
+        unavailable: vec![],
         name: "Provider".into(),
         source: Some("https://provider.example/sub/secret".into()),
         profiles: vec![profile("A", 443), profile("B", 444)],
