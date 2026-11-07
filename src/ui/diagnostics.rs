@@ -1,7 +1,10 @@
+mod views;
 use super::design::{ButtonTone, command, enabled_command, heading, mix, modal};
 use super::*;
 use eivro::diagnostics::{self as engine, Action, Finding, Report, Request, Status};
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(test)]
+use views::summary;
 
 #[derive(Default)]
 pub(super) struct State {
@@ -22,6 +25,7 @@ pub(super) struct State {
     notice: Option<String>,
     repair_error: Option<String>,
     recheck_when_idle: bool,
+    show_technical: bool,
 }
 
 struct Context {
@@ -40,6 +44,10 @@ enum Message {
 }
 
 impl State {
+    pub(super) fn open_technical(&mut self) {
+        self.show_technical = true;
+    }
+
     pub(super) fn has_context(&self) -> bool {
         self.context.is_some()
     }
@@ -372,211 +380,6 @@ impl App {
                     && !self.guard_session))
     }
 
-    pub(super) fn diagnostics_page(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, p: Palette) {
-        ui.label(heading("Диагностика", 26.0));
-        ui.label(RichText::new("Проверим соединение и подскажем следующий шаг.").color(p.muted));
-        ui.add_space(20.0);
-        egui::ScrollArea::vertical().id_salt("diagnostics-page").show(ui, |ui| {
-            let busy = self.diagnostics.busy();
-            let session_busy = self.diagnostics_session_busy();
-            egui::Frame::new().fill(p.card).corner_radius(12).inner_margin(20).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                let (title, subtitle, status) = summary(&self.diagnostics);
-                ui.horizontal_top(|ui| {
-                    status_symbol(ui, status, p, 34.0);
-                    ui.add_space(5.0);
-                    ui.vertical(|ui| {
-                        ui.label(heading(title, 21.0));
-                        ui.label(RichText::new(subtitle).color(p.muted));
-                    });
-                });
-                ui.add_space(16.0);
-                ui.horizontal_wrapped(|ui| {
-                    if busy {
-                        ui.spinner();
-                        ui.label(&self.diagnostics.progress);
-                        let cancelling = self.diagnostics.cancel.as_ref()
-                            .is_some_and(|c| c.load(Ordering::Relaxed));
-                        if enabled_command(ui, !cancelling, if cancelling { "Отменяем…" } else { "Отменить" }, ButtonTone::Secondary, Vec2::ZERO, p).clicked() {
-                            self.diagnostics.cancel_by_user();
-                        }
-                    } else {
-                        let label = if self.diagnostics.network_tests { "Проверить доступ" } else if self.diagnostics.report.is_some() { "Проверить снова" } else { "Проверить" };
-                        if enabled_command(ui, !session_busy, label, ButtonTone::Primary, Vec2::new(158.0, 40.0), p).clicked() {
-                            self.start_diagnostics(ctx);
-                        }
-                        if let Some(report) = &self.diagnostics.report
-                            && command(ui, "Отчёт…", ButtonTone::Quiet, Vec2::ZERO, p).clicked()
-                        {
-                            let mut text = report.sanitized_text();
-                            if self.diagnostics.stale {
-                                text.push_str("Результаты устарели после изменения сети или настроек.\n");
-                            }
-                            self.diagnostics.export = Some(text);
-                        }
-                    }
-                });
-                if session_busy && !busy {
-                    ui.add_space(8.0);
-                    ui.label(RichText::new("Дождитесь завершения подключения или отключения.").small().color(p.muted));
-                }
-            });
-            ui.add_space(12.0);
-            let previous_options = (
-                self.diagnostics.network_tests,
-                self.diagnostics.direct_test,
-                self.diagnostics.address.clone(),
-            );
-            egui::CollapsingHeader::new("Что проверять")
-                .id_salt("diagnostics-options")
-                .show(ui, |ui| {
-                    ui.add_enabled_ui(!busy, |ui| {
-                        ui.label(RichText::new("Всегда: интерфейсы, DNS, маршруты, локальный прокси и компоненты Eivro.").color(p.muted));
-                        ui.add_space(8.0);
-                        ui.label("Сайт или IP-адрес · необязательно");
-                        ui.add(egui::TextEdit::singleline(&mut self.diagnostics.address)
-                            .id_salt("diagnostics-address")
-                            .hint_text("example.org")
-                            .desired_width(ui.available_width())
-                            .char_limit(253));
-                        ui.label(RichText::new("Покажем применимое правило. Для запроса к сайту включите проверку доступа.").small().color(p.muted));
-                        ui.add_space(10.0);
-                        ui.checkbox(&mut self.diagnostics.network_tests, "Проверить доступ DNS и HTTPS");
-                        if self.diagnostics.network_tests {
-                            ui.label(RichText::new("Короткие запросы к указанному сайту или к example.com, если поле пустое. HTTPS использует Eivro, когда соединение активно.").small().color(p.muted));
-                            ui.label(RichText::new(if self.running && self.settings.mode != Mode::Tun {
-                                "Системный DNS не идёт через локальный прокси. Для его проверки нужно разрешить запросы вне VPN ниже."
-                            } else {
-                                "DNS проверяется по системным настройкам."
-                            }).small().color(p.muted));
-                            ui.add_space(6.0);
-                            if self.settings.kill_switch { self.diagnostics.direct_test = false; }
-                            ui.add_enabled(!self.settings.kill_switch, egui::Checkbox::new(&mut self.diagnostics.direct_test, "Сравнить с прямым доступом вне VPN"));
-                            ui.label(RichText::new(if self.settings.kill_switch {
-                                "Недоступно при включённом kill switch. Защита останется включённой."
-                            } else {
-                                "Отдельный запрос пойдёт через физический интерфейс вне VPN."
-                            }).small().color(p.muted));
-                        }
-                    });
-                });
-            if previous_options != (
-                self.diagnostics.network_tests,
-                self.diagnostics.direct_test,
-                self.diagnostics.address.clone(),
-            ) {
-                self.diagnostics.invalidate_and_cancel();
-            }
-            if let Some(error) = &self.diagnostics.repair_error {
-                ui.add_space(10.0);
-                ui.colored_label(p.error, error);
-            }
-            if let Some(notice) = &self.diagnostics.notice {
-                ui.add_space(8.0);
-                ui.label(RichText::new(notice).color(p.muted));
-            }
-            if self.diagnostics.stale {
-                ui.add_space(10.0);
-                ui.label(RichText::new("Сеть или настройки изменились. Повторите проверку перед исправлением.").color(p.muted));
-            }
-            let report = self.diagnostics.report.clone();
-            if let Some(report) = report {
-                ui.add_space(18.0);
-                let mut findings: Vec<_> = report.findings.iter().filter(|f| f.status != Status::Pass).collect();
-                findings.sort_by_key(|f| match f.status { Status::Error => 0, Status::Warning => 1, _ => 2 });
-                if !findings.is_empty() {
-                    ui.label(heading("Результаты проверки", 17.0));
-                    ui.add_space(10.0);
-                    egui::Frame::new().fill(p.card).corner_radius(12).inner_margin(16).show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        for (index, finding) in findings.iter().enumerate() {
-                            if index > 0 { ui.add_space(8.0); ui.separator(); ui.add_space(8.0); }
-                            self.diagnostic_finding(ui, ctx, finding, index, p);
-                        }
-                    });
-                }
-                let passed: Vec<_> = report.findings.iter().filter(|f| f.status == Status::Pass).collect();
-                if !passed.is_empty() {
-                    ui.add_space(14.0);
-                    egui::CollapsingHeader::new(format!("В порядке · {}", passed.len()))
-                        .id_salt("diagnostics-passed")
-                        .show(ui, |ui| {
-                            for (index, finding) in passed.iter().enumerate() {
-                                self.diagnostic_finding(ui, ctx, finding, index + 100, p);
-                                ui.add_space(8.0);
-                            }
-                        });
-                }
-            } else if !busy {
-                ui.add_space(22.0);
-                ui.label(heading("Сначала — состояние вашего устройства", 17.0));
-                ui.add_space(8.0);
-                ui.label(RichText::new("Проверка ничего не меняет. Каждое исправление потребует отдельного подтверждения.").color(p.muted));
-                ui.add_space(18.0);
-                for (title, detail) in [
-                    ("Сеть и DNS", "Интерфейс, адреса DNS и доступные маршруты"),
-                    ("Eivro и правила", "Сервер, сетевые выходы, прокси и помощник TUN"),
-                ] {
-                    ui.label(RichText::new(title).strong());
-                    ui.label(RichText::new(detail).color(p.muted));
-                    ui.add_space(12.0);
-                }
-            }
-            ui.add_space(18.0);
-            ui.label(RichText::new("Данные остаются в приложении. Отчёт можно просмотреть и скопировать без адресов и параметров доступа.").small().color(p.muted));
-        });
-    }
-
-    fn diagnostic_finding(
-        &mut self,
-        ui: &mut egui::Ui,
-        ctx: &egui::Context,
-        finding: &Finding,
-        index: usize,
-        p: Palette,
-    ) {
-        ui.push_id(("diagnostic-finding", index, &finding.id), |ui| {
-            ui.horizontal_wrapped(|ui| {
-                let color = status_color(finding.status, p);
-                ui.label(
-                    RichText::new(status_label(finding.status))
-                        .small()
-                        .color(color),
-                );
-                ui.label(RichText::new(&finding.title).strong());
-            });
-            if !finding.advice.is_empty() {
-                ui.label(RichText::new(&finding.advice).color(p.muted));
-            }
-            if !finding.detail.is_empty() {
-                egui::CollapsingHeader::new("Подробности")
-                    .id_salt("details")
-                    .show(ui, |ui| {
-                        ui.label(&finding.detail);
-                    });
-            }
-            if let Some(action) = &finding.action {
-                let actionable = self.diagnostics_action_available(action);
-                if enabled_command(
-                    ui,
-                    actionable,
-                    action_label(action),
-                    ButtonTone::Secondary,
-                    Vec2::ZERO,
-                    p,
-                )
-                .clicked()
-                {
-                    match action {
-                        Action::OpenRoutes => self.navigate(Page::Routes, ctx),
-                        Action::OpenSettings => self.navigate(Page::Settings, ctx),
-                        _ => self.diagnostics.confirmation = Some(action.clone()),
-                    }
-                }
-            }
-        });
-    }
-
     pub(super) fn diagnostics_dialog(&mut self, ctx: &egui::Context, p: Palette) {
         if let Some(action) = self.diagnostics.confirmation.clone() {
             let mut close = false;
@@ -645,103 +448,12 @@ impl App {
     }
 }
 
-fn summary(state: &State) -> (String, String, Status) {
-    if state.busy() && state.repairing {
-        return (
-            "Выполняем действие".into(),
-            "Отмена остановит оставшиеся шаги. Выполненные изменения сохранятся.".into(),
-            Status::Unknown,
-        );
-    }
-    if state.busy() {
-        return (
-            "Проверяем соединение".into(),
-            "Можно отменить в любой момент.".into(),
-            Status::Unknown,
-        );
-    }
-    if state.stale {
-        return (
-            "Нужна новая проверка".into(),
-            "Предыдущий снимок больше не актуален.".into(),
-            Status::Unknown,
-        );
-    }
-    let Some(report) = &state.report else {
-        return (
-            "Готовы проверить сеть".into(),
-            if state.network_tests {
-                "Локальные проверки и короткие запросы DNS / HTTPS."
-            } else {
-                "Локальная проверка без отправки запросов в интернет."
-            }
-            .into(),
-            Status::Unknown,
-        );
-    };
-    if report.cancelled {
-        return (
-            "Проверка отменена".into(),
-            "Ниже — только успевшие завершиться проверки.".into(),
-            Status::Unknown,
-        );
-    }
-    let errors = report
-        .findings
-        .iter()
-        .filter(|f| f.status == Status::Error)
-        .count();
-    let warnings = report
-        .findings
-        .iter()
-        .filter(|f| f.status == Status::Warning)
-        .count();
-    let unknown = report
-        .findings
-        .iter()
-        .filter(|f| f.status == Status::Unknown)
-        .count();
-    let passed = report
-        .findings
-        .iter()
-        .filter(|f| f.status == Status::Pass)
-        .count();
-    let status = if errors > 0 {
-        Status::Error
-    } else if warnings > 0 {
-        Status::Warning
-    } else if unknown > 0 {
-        Status::Unknown
-    } else {
-        Status::Pass
-    };
-    let title = match status {
-        Status::Error => "Есть препятствия для соединения",
-        Status::Warning => "Есть что проверить",
-        Status::Unknown => "Проверка завершена не полностью",
-        Status::Pass => "Проверки пройдены",
-    };
-    (
-        title.into(),
-        format!(
-            "{} · В порядке: {passed} · Внимание: {} · Не проверено: {unknown}",
-            if state.last_network_tests {
-                "С проверкой доступа"
-            } else {
-                "Локальный снимок"
-            },
-            errors + warnings
-        ),
-        status,
-    )
-}
-
 fn status_label(status: Status) -> &'static str {
     match status {
         Status::Pass => "✓ В порядке",
         Status::Warning => "! Внимание",
         Status::Error => "! Ошибка",
-        Status::Unknown => "? Не проверено",
+        Status::Unknown => "Справочно",
     }
 }
 
@@ -775,7 +487,7 @@ fn status_symbol(ui: &mut egui::Ui, status: Status, p: Palette, size: f32) {
         Align2::CENTER_CENTER,
         match status {
             Status::Pass => "✓",
-            Status::Unknown => "?",
+            Status::Unknown => "i",
             _ => "!",
         },
         FontId::proportional(21.0),
@@ -857,6 +569,33 @@ impl State {
                 Finding { id: "rule".into(), status: Status::Warning, title: "Для сайта выбран недоступный сетевой выход".into(), detail: "Правило направляет запросы через интерфейс, который сейчас отключён.".into(), advice: "Подключите нужную сеть или измените правило для сайта.".into(), action: Some(Action::OpenRoutes) },
                 Finding { id: "policy".into(), status: Status::Unknown, title: "Правила ядра недоступны".into(), detail: "Для чтения этой части состояния недостаточно прав.".into(), advice: "Остальные проверки завершены; отсутствие доступа не означает ошибку сети.".into(), action: None },
             ]);
+        }
+        if matches!(
+            page,
+            "diagnostics-online" | "diagnostics-partial" | "information"
+        ) {
+            self.network_tests = true;
+            self.last_network_tests = true;
+            findings.push(Finding {
+                id: "https".into(),
+                status: if page == "diagnostics-partial" {
+                    Status::Unknown
+                } else {
+                    Status::Pass
+                },
+                title: "HTTPS по системному маршруту".into(),
+                detail: "Синтетический результат для проверки интерфейса.".into(),
+                advice: String::new(),
+                action: None,
+            });
+            for (id, title) in [
+                ("nm_dns", "Нет полного сравнения DNS"),
+                ("subscription", "Последние данные поставщика подписки"),
+                ("firewall", "Область проверки сетевого фильтра"),
+                ("endpoint_route", "Маршрут к серверу VPN"),
+            ] {
+                findings.push(Finding { id: id.into(), status: Status::Unknown, title: title.into(), detail: "Проверка этой части состояния ограничена. Это не подтверждённая неисправность.".into(), advice: String::new(), action: None });
+            }
         }
         self.report = Some(Report {
             findings,

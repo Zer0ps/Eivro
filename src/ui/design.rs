@@ -247,6 +247,12 @@ pub(super) fn icon(ui: &egui::Ui, center: egui::Pos2, page: Page, color: Color32
             }
         }
         #[cfg(target_os = "linux")]
+        Page::Information => {
+            painter.circle_stroke(center, 7.5, s);
+            painter.circle_filled(pos(0.0, -3.5), 1.0, color);
+            painter.line_segment([pos(0.0, -0.5), pos(0.0, 4.0)], s);
+        }
+        #[cfg(target_os = "linux")]
         Page::Diagnostics => {
             painter.circle_stroke(center, 8.0, s);
             painter.add(egui::Shape::line(

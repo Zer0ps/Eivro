@@ -21,70 +21,79 @@ impl App {
             (Page::Diagnostics, "Диагностика"),
             (Page::Settings, "Настройки"),
         ] {
-            let selected = page == self.page;
-            let fill = ui.painter().add(egui::Shape::Noop);
-            let response = ui.add_sized(
-                [ui.available_width(), 44.0],
-                egui::Button::new("")
-                    .fill(Color32::TRANSPARENT)
-                    .stroke(Stroke::NONE),
-            );
-            let hover = ctx.animate_bool_with_time(
-                response.id.with("nav-hover"),
-                response.hovered(),
-                ui.style().animation_time.min(0.14),
-            );
-            ui.painter().set(
-                fill,
-                egui::epaint::RectShape::filled(
-                    response.rect,
-                    9,
-                    if selected {
-                        p.soft
-                    } else {
-                        mix(p.bg, p.raised, hover)
-                    },
-                ),
-            );
-            let color = if selected { p.accent } else { p.muted };
-            icon(
-                ui,
-                response.rect.left_center() + Vec2::new(18.0, 0.0),
-                page,
-                color,
-            );
-            ui.painter().text(
-                response.rect.left_center() + Vec2::new(40.0, 0.0),
-                Align2::LEFT_CENTER,
-                title,
-                FontId::proportional(14.0),
-                color,
-            );
-            if selected {
-                ui.painter().rect_filled(
-                    egui::Rect::from_center_size(
-                        response.rect.left_center() + Vec2::new(1.5, 0.0),
-                        Vec2::new(3.0, 17.0),
-                    ),
-                    2,
-                    p.accent,
-                );
-            }
-            if response.has_focus() {
-                ui.painter().rect_stroke(
-                    response.rect,
-                    9,
-                    Stroke::new(1.5_f32, p.accent),
-                    egui::StrokeKind::Inside,
-                );
-            }
-            response
-                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, title));
-            if response.clicked() {
-                self.navigate(page, ctx);
-            }
-            ui.add_space(3.0);
+            self.navigation_item(ui, ctx, p, page, title);
         }
+    }
+    fn navigation_item(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        p: Palette,
+        page: Page,
+        title: &str,
+    ) {
+        let selected = page == self.page;
+        let fill = ui.painter().add(egui::Shape::Noop);
+        let response = ui.add_sized(
+            [ui.available_width(), 44.0],
+            egui::Button::new("")
+                .fill(Color32::TRANSPARENT)
+                .stroke(Stroke::NONE),
+        );
+        let hover = ctx.animate_bool_with_time(
+            response.id.with("nav-hover"),
+            response.hovered(),
+            ui.style().animation_time.min(0.14),
+        );
+        ui.painter().set(
+            fill,
+            egui::epaint::RectShape::filled(
+                response.rect,
+                9,
+                if selected {
+                    p.soft
+                } else {
+                    mix(p.bg, p.raised, hover)
+                },
+            ),
+        );
+        let color = if selected { p.accent } else { p.muted };
+        icon(
+            ui,
+            response.rect.left_center() + Vec2::new(18.0, 0.0),
+            page,
+            color,
+        );
+        ui.painter().text(
+            response.rect.left_center() + Vec2::new(40.0, 0.0),
+            Align2::LEFT_CENTER,
+            title,
+            FontId::proportional(14.0),
+            color,
+        );
+        if selected {
+            ui.painter().rect_filled(
+                egui::Rect::from_center_size(
+                    response.rect.left_center() + Vec2::new(1.5, 0.0),
+                    Vec2::new(3.0, 17.0),
+                ),
+                2,
+                p.accent,
+            );
+        }
+        if response.has_focus() {
+            ui.painter().rect_stroke(
+                response.rect,
+                9,
+                Stroke::new(1.5_f32, p.accent),
+                egui::StrokeKind::Inside,
+            );
+        }
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, title));
+        if response.clicked() {
+            self.navigate(page, ctx);
+        }
+        ui.add_space(3.0);
     }
     pub(super) fn shell(&mut self, ctx: &egui::Context, p: Palette) {
         let narrow = ctx.content_rect().width() < 780.0;
@@ -215,7 +224,19 @@ impl App {
                     if expanded < 0.99 {
                         content.disable();
                     }
-                    self.navigation_items(&mut content, ctx, p);
+                    egui::ScrollArea::vertical()
+                        .id_salt("navigation-items")
+                        .max_height(
+                            (content.available_height()
+                                - if cfg!(target_os = "linux") { 72.0 } else { 0.0 })
+                            .max(50.0),
+                        )
+                        .show(&mut content, |ui| self.navigation_items(ui, ctx, p));
+                    #[cfg(target_os = "linux")]
+                    {
+                        content.add_space((content.available_height() - 59.0).max(12.0));
+                        self.navigation_item(&mut content, ctx, p, Page::Information, "Информация");
+                    }
                 });
         }
         egui::CentralPanel::default()
@@ -231,7 +252,7 @@ impl App {
                     Page::Subscriptions => 900.0,
                     Page::Settings => 760.0,
                     #[cfg(target_os = "linux")]
-                    Page::Diagnostics => 900.0,
+                    Page::Diagnostics | Page::Information => 760.0,
                 };
                 let width = ui.available_width().min(limit);
                 let left = ((ui.available_width() - width) * 0.5).max(0.0);
@@ -268,6 +289,8 @@ impl App {
                     Page::Settings => self.settings_page(&mut content, ctx, p),
                     #[cfg(target_os = "linux")]
                     Page::Diagnostics => self.diagnostics_page(&mut content, ctx, p),
+                    #[cfg(target_os = "linux")]
+                    Page::Information => self.information_page(&mut content, ctx, p),
                 }
             });
         if narrow && self.navigation_overlay {
@@ -283,18 +306,28 @@ impl App {
                 )
                 .show(ctx, |ui| {
                     ui.set_width(190.0);
-                    self.navigation_items(ui, ctx, p);
-                    if command(
-                        ui,
-                        "Скрыть меню",
-                        ButtonTone::Quiet,
-                        Vec2::new(190.0, 36.0),
-                        p,
-                    )
-                    .clicked()
-                    {
-                        self.navigation_overlay = false;
-                    }
+                    egui::ScrollArea::vertical()
+                        .id_salt("navigation-overlay-items")
+                        .max_height((ctx.content_rect().height() - 105.0).max(90.0))
+                        .show(ui, |ui| {
+                            self.navigation_items(ui, ctx, p);
+                            #[cfg(target_os = "linux")]
+                            {
+                                ui.add_space(12.0);
+                                self.navigation_item(ui, ctx, p, Page::Information, "Информация");
+                            }
+                            if command(
+                                ui,
+                                "Скрыть меню",
+                                ButtonTone::Quiet,
+                                Vec2::new(190.0, 36.0),
+                                p,
+                            )
+                            .clicked()
+                            {
+                                self.navigation_overlay = false;
+                            }
+                        });
                 });
             if response.should_close() {
                 self.navigation_overlay = false;

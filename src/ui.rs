@@ -34,6 +34,8 @@ enum Page {
     Routes,
     #[cfg(target_os = "linux")]
     Diagnostics,
+    #[cfg(target_os = "linux")]
+    Information,
     Settings,
 }
 
@@ -203,9 +205,20 @@ impl App {
         #[cfg(feature = "qa")]
         match std::env::var("EIVRO_QA_PAGE").as_deref() {
             #[cfg(target_os = "linux")]
-            Ok(page @ ("diagnostics" | "diagnostics-error" | "diagnostics-clean")) => {
+            Ok(
+                page @ ("diagnostics"
+                | "diagnostics-error"
+                | "diagnostics-clean"
+                | "diagnostics-online"
+                | "diagnostics-partial"
+                | "information"),
+            ) => {
                 app.page = Page::Diagnostics;
                 app.diagnostics.fixture(page, &app.settings);
+                if page == "information" {
+                    app.page = Page::Information;
+                    app.diagnostics.open_technical();
+                }
             }
             #[cfg(target_os = "linux")]
             Ok("exit-error") => {
