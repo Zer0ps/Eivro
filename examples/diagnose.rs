@@ -1,11 +1,11 @@
 //! Explicit Linux diagnostic CLI for disposable-VM acceptance tests.
 //! Emits only stable check IDs/statuses and action types; never settings or URIs.
-#[cfg(target_os = "linux")]
 fn main() {
     use eivro::diagnostics::{self, Action, Request};
     use std::sync::{Arc, atomic::AtomicBool};
     eivro::privacy::harden().unwrap();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    #[cfg(target_os = "linux")]
     if args.iter().any(|a| a == "--fingerprint") {
         println!("{}", diagnostics::fingerprint().unwrap());
         return;
@@ -33,6 +33,7 @@ fn main() {
         cancel.clone(),
         |_| {},
     );
+    #[cfg(target_os = "linux")]
     if let Some(pair) = args.windows(2).find(|p| p[0] == "--restore-dns") {
         assert!(
             std::env::var("EIVRO_VM_REPAIR").as_deref() == Ok("1"),
@@ -67,8 +68,4 @@ fn main() {
             }
         );
     }
-}
-#[cfg(not(target_os = "linux"))]
-fn main() {
-    eprintln!("Linux-only diagnostic probe");
 }

@@ -167,14 +167,14 @@ fn opaque_configurations_stay_local_and_service_error_pages_do_not_become_profil
 }
 
 #[test]
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn upgrading_protects_the_old_store_for_rollback() {
     use std::os::unix::fs::PermissionsExt;
     let dir = std::env::temp_dir().join(format!("eivro-import-v7-{}", std::process::id()));
     std::fs::create_dir(&dir).unwrap();
     let file = dir.join("settings.json");
     let previous = serde_json::to_vec(&Settings {
-        schema: 6,
+        schema: eivro::storage::SCHEMA - 1,
         ..Default::default()
     })
     .unwrap();

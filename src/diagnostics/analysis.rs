@@ -350,7 +350,7 @@ pub(super) fn target_route(ctx: &Context, snapshot: &Snapshot, ip: IpAddr, repor
 
 fn target_route_evidence(
     ip: IpAddr,
-    output: Option<&super::linux::Output>,
+    output: Option<&super::https::Output>,
     routes: &Result<Value>,
 ) -> (Status, String) {
     let Some(output) = output else {
@@ -746,7 +746,7 @@ mod tests {
     #[test]
     fn target_route_needs_matching_evidence_before_calling_a_failed_lookup_blocked() {
         let ip: IpAddr = "192.0.2.123".parse().unwrap();
-        let failed = super::super::linux::Output {
+        let failed = super::super::https::Output {
             code: Some(2),
             text: String::new(),
         };
@@ -760,7 +760,7 @@ mod tests {
             Status::Unknown
         );
         assert_eq!(target_route_evidence(ip, None, &routes).0, Status::Unknown);
-        let malformed = super::super::linux::Output {
+        let malformed = super::super::https::Output {
             code: Some(0),
             text: "unexpected output".into(),
         };
@@ -768,7 +768,7 @@ mod tests {
             target_route_evidence(ip, Some(&malformed), &routes).0,
             Status::Unknown
         );
-        let fakeip = super::super::linux::Output {
+        let fakeip = super::super::https::Output {
             code: Some(0),
             text: json!([{ "dev":crate::platform::TUN_NAME, "dst":"198.18.1.1" }]).to_string(),
         };

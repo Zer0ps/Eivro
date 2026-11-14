@@ -1581,7 +1581,7 @@ impl App {
             if self.commit(next) {
                 editor = Editor::new(&self.settings);
                 if changed {
-                    self.reconfigure();
+                    self.apply_saved_connection();
                 }
             }
         }

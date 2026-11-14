@@ -1,6 +1,82 @@
 use super::design::{ButtonTone, command, heading};
 use super::*;
 
+// Scrolled-out rows keep a stable keyboard target and their share of the
+// scroll range. Text layout, glyphs and button animation are only needed on screen.
+fn server_button(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    rect: egui::Rect,
+    name: &str,
+    selected: bool,
+    p: Palette,
+) -> egui::Response {
+    let response = ui.interact(rect, id, egui::Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::SelectableLabel,
+            ui.is_enabled(),
+            selected,
+            name,
+        )
+    });
+    if response.gained_focus() {
+        response.scroll_to_me(None);
+    }
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+    let base = if selected { p.soft } else { p.card };
+    let hover = ui.ctx().animate_bool_with_time(
+        id.with("hover"),
+        response.hovered() || response.has_focus(),
+        ui.style().animation_time.min(0.14),
+    );
+    let pressed = response.is_pointer_button_down_on()
+        || (response.has_focus()
+            && ui.input(|i| i.key_down(egui::Key::Space) || i.key_down(egui::Key::Enter)));
+    let down = ui.ctx().animate_bool_with_time(
+        id.with("press"),
+        pressed,
+        ui.style().animation_time.min(0.08),
+    );
+    let fill = design::mix(design::mix(base, p.text, 0.065 * hover), p.bg, 0.16 * down);
+    ui.painter().rect_filled(rect.shrink(down * 0.65), 9, fill);
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            rect,
+            9,
+            Stroke::new(1.5_f32, p.accent),
+            egui::StrokeKind::Inside,
+        );
+    }
+    let color = if selected { p.accent } else { p.text };
+    let mut job = egui::text::LayoutJob::simple(
+        crate::emoji::text(name),
+        FontId::proportional(14.0),
+        color,
+        (rect.width() - if selected { 42.0 } else { 24.0 }).max(1.0),
+    );
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    let galley = ui.painter().layout_job(job);
+    ui.painter().galley(
+        rect.left_center() + Vec2::new(12.0, -galley.size().y * 0.5),
+        galley,
+        color,
+    );
+    if selected {
+        ui.painter().text(
+            rect.right_center() - Vec2::new(10.0, 0.0),
+            Align2::RIGHT_CENTER,
+            "✓",
+            FontId::proportional(14.0),
+            color,
+        );
+    }
+    response.on_hover_text(name)
+}
+
 impl App {
     pub(super) fn overview(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, p: Palette) {
         if (self.catalog_open || ctx.memory(|m| m.top_modal_layer().is_none()))
@@ -49,19 +125,7 @@ impl App {
                 Vec2::new(width, 0.0),
                 egui::Layout::top_down(egui::Align::Center),
                 |ui| {
-                    let state = if self.quitting {
-                        "Завершение…"
-                    } else if self.stopping {
-                        "Отключение…"
-                    } else if self.reconnect_pending {
-                        "Переключение…"
-                    } else if self.running {
-                        "Подключено"
-                    } else if self.want_connected {
-                        self.phase
-                    } else {
-                        "Не подключено"
-                    };
+                    let (state, action_enabled) = self.connection_controls_state();
                     let color = if self.running { p.accent } else { p.muted };
                     let (r, _) = ui.allocate_exact_size(Vec2::splat(72.0), egui::Sense::hover());
                     ui.painter()
@@ -190,7 +254,7 @@ impl App {
                         let mut next = self.settings.clone();
                         next.mode = mode;
                         if self.commit(next) {
-                            self.reconfigure();
+                            self.apply_saved_connection();
                         }
                     }
                     ui.add_space(24.0);
@@ -203,10 +267,8 @@ impl App {
                     } else {
                         "Подключиться"
                     };
-                    let enabled = !self.quitting
-                        && (self.settings.selected_profile().is_some() || self.want_connected);
                     let action = ui
-                        .add_enabled_ui(enabled, |ui| {
+                        .add_enabled_ui(action_enabled, |ui| {
                             command(ui, action, ButtonTone::Primary, Vec2::new(width, 48.0), p)
                         })
                         .inner;
@@ -261,8 +323,33 @@ impl App {
         .inner
     }
 
+    fn connection_controls_state(&self) -> (&str, bool) {
+        if self.quitting {
+            return ("Завершение…", false);
+        }
+        if self.reconnect_pending {
+            return ("Переключение…", self.want_connected);
+        }
+        if self.stopping {
+            return ("Отключение…", false);
+        }
+        let label = if self.running {
+            "Подключено"
+        } else if self.want_connected {
+            self.phase
+        } else {
+            "Не подключено"
+        };
+        (
+            label,
+            self.want_connected || self.settings.selected_profile().is_some(),
+        )
+    }
+
     pub(super) fn catalog(&mut self, ctx: &egui::Context, p: Palette) {
-        let progress = ctx.animate_bool_with_time_and_easing(
+        // Apply one symmetric curve after interpolation so reversing mid-slide
+        // leaves the sheet at the same position.
+        let progress = egui::emath::easing::quadratic_in_out(ctx.animate_bool_with_time(
             egui::Id::new("catalog-reveal"),
             self.catalog_open,
             if self.settings.reduced_motion {
@@ -270,17 +357,25 @@ impl App {
             } else {
                 0.22
             },
-            egui::emath::easing::cubic_out,
-        );
+        ));
         if progress <= 0.0 {
             return;
         }
-        let width = (ctx.content_rect().width() * 0.46).clamp(330.0, 430.0);
-        let height = ctx.content_rect().height() - 80.0;
-        let area = egui::Modal::default_area(egui::Id::new("server-catalog")).anchor(
-            Align2::RIGHT_CENTER,
-            Vec2::new(-20.0 + (1.0 - progress) * (width + 70.0), 0.0),
-        );
+        let screen = ctx.content_rect().size();
+        let inset = if screen.x < 420.0 { 8.0 } else { 20.0 };
+        let width = (screen.x * 0.46)
+            .clamp(330.0, 430.0)
+            .min((screen.x - 2.0 * inset).max(1.0));
+        let height = (screen.y - if screen.y < 480.0 { 16.0 } else { 80.0 }).max(1.0);
+        // The default Area constraint pins an off-screen panel back to the
+        // viewport edge for almost the entire closing animation.
+        let area = egui::Modal::default_area(egui::Id::new("server-catalog"))
+            .constrain(false)
+            .fade_in(false)
+            .anchor(
+                Align2::RIGHT_CENTER,
+                Vec2::new(-inset + (1.0 - progress) * (width + inset + 10.0), 0.0),
+            );
         let mut choice = None;
         let mut close = false;
         let response = egui::Modal::new(egui::Id::new("server-catalog"))
@@ -293,6 +388,10 @@ impl App {
                     .corner_radius(16),
             )
             .show(ctx, |ui| {
+                if !self.catalog_open {
+                    ui.visuals_mut().disabled_alpha = 1.0;
+                    ui.disable();
+                }
                 ui.set_width(width - 48.0);
                 ui.set_height(height - 48.0);
                 ui.horizontal(|ui| {
@@ -317,19 +416,19 @@ impl App {
                 egui::ScrollArea::vertical()
                     .id_salt("catalog-scroll")
                     .max_height(height - 210.0)
-                    .min_scrolled_height(100.0)
+                    .min_scrolled_height(32.0)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         let mut visible = 0;
                         for (si, sub) in self.settings.subscriptions.iter().enumerate() {
+                            let group_matches =
+                                filter.is_empty() || sub.name.to_lowercase().contains(&filter);
                             let matches: Vec<_> = sub
                                 .profiles
                                 .iter()
                                 .enumerate()
                                 .filter(|(_, p)| {
-                                    filter.is_empty()
-                                        || p.name.to_lowercase().contains(&filter)
-                                        || sub.name.to_lowercase().contains(&filter)
+                                    group_matches || p.name.to_lowercase().contains(&filter)
                                 })
                                 .collect();
                             if matches.is_empty() {
@@ -354,51 +453,71 @@ impl App {
                                 for (pi, profile) in matches {
                                     let selected = si == self.settings.selected_subscription
                                         && pi == sub.selected;
-                                    ui.horizontal(|ui| {
-                                        let label = crate::emoji::text(&profile.name);
-                                        let width = (ui.available_width() - 46.0).max(120.0);
-                                        if command(
-                                            ui,
-                                            label,
-                                            if selected {
-                                                ButtonTone::Selected
-                                            } else {
-                                                ButtonTone::Quiet
-                                            },
-                                            Vec2::new(width, 44.0),
-                                            p,
-                                        )
-                                        .on_hover_text(&profile.name)
+                                    let (_, row) =
+                                        ui.allocate_space(Vec2::new(ui.available_width(), 44.0));
+                                    let row_id = ui.make_persistent_id(("server", sub.id, pi));
+                                    let button = egui::Rect::from_min_size(
+                                        row.min,
+                                        Vec2::new((row.width() - 46.0).max(1.0), row.height()),
+                                    );
+                                    if server_button(ui, row_id, button, &profile.name, selected, p)
                                         .clicked()
-                                        {
-                                            choice = Some((si, pi));
-                                        }
-                                        if selected {
-                                            let menu = command(
-                                                ui,
-                                                "···",
-                                                ButtonTone::Quiet,
-                                                Vec2::new(32.0, 36.0),
-                                                p,
+                                    {
+                                        choice = Some((si, pi));
+                                    }
+                                    if selected && ui.is_rect_visible(row) {
+                                        let menu_rect = egui::Rect::from_center_size(
+                                            egui::pos2(row.right() - 16.0, row.center().y),
+                                            Vec2::new(32.0, 36.0),
+                                        );
+                                        let menu = ui
+                                            .interact(
+                                                menu_rect,
+                                                row_id.with("menu"),
+                                                egui::Sense::click(),
                                             )
                                             .on_hover_text("Действия с выбранным сервером");
-                                            egui::Popup::menu(&menu).show(|ui| {
-                                                if command(
-                                                    ui,
-                                                    "Удалить сервер…",
-                                                    ButtonTone::Danger,
-                                                    Vec2::ZERO,
-                                                    p,
-                                                )
-                                                .clicked()
-                                                {
-                                                    self.delete_server = true;
-                                                    close = true;
-                                                    ui.close();
-                                                }
-                                            });
+                                        menu.widget_info(|| {
+                                            egui::WidgetInfo::labeled(
+                                                egui::WidgetType::Button,
+                                                ui.is_enabled(),
+                                                "Действия с выбранным сервером",
+                                            )
+                                        });
+                                        if menu.has_focus() || menu.hovered() {
+                                            ui.painter().rect_filled(menu_rect, 8, p.raised);
                                         }
-                                    });
+                                        if menu.has_focus() {
+                                            ui.painter().rect_stroke(
+                                                menu_rect,
+                                                8,
+                                                Stroke::new(1.5_f32, p.accent),
+                                                egui::StrokeKind::Inside,
+                                            );
+                                        }
+                                        for x in [-5.0, 0.0, 5.0] {
+                                            ui.painter().circle_filled(
+                                                menu_rect.center() + Vec2::new(x, 0.0),
+                                                1.3,
+                                                p.muted,
+                                            );
+                                        }
+                                        egui::Popup::menu(&menu).show(|ui| {
+                                            if command(
+                                                ui,
+                                                "Удалить сервер…",
+                                                ButtonTone::Danger,
+                                                Vec2::ZERO,
+                                                p,
+                                            )
+                                            .clicked()
+                                            {
+                                                self.delete_server = true;
+                                                close = true;
+                                                ui.close();
+                                            }
+                                        });
+                                    }
                                 }
                             });
                             ui.add_space(8.0);
@@ -431,16 +550,118 @@ impl App {
             });
         self.catalog_focus = None;
         if let Some((si, pi)) = choice {
-            let mut next = self.settings.clone();
-            next.selected_subscription = si;
-            next.current_mut().unwrap().selected = pi;
-            if self.commit(next) {
-                self.reconfigure();
-                close = true;
-            }
+            close = self.select_catalog_profile(si, pi);
         }
         if close || response.should_close() {
             self.catalog_open = false;
         }
+    }
+
+    fn select_catalog_profile(&mut self, si: usize, pi: usize) -> bool {
+        let Some(sub) = self.settings.subscriptions.get(si) else {
+            return false;
+        };
+        if pi >= sub.profiles.len() {
+            return false;
+        }
+        if si == self.settings.selected_subscription && pi == sub.selected {
+            return true;
+        }
+        let mut next = self.settings.clone();
+        next.selected_subscription = si;
+        next.subscriptions[si].selected = pi;
+        if !self.commit(next) {
+            return false;
+        }
+        self.apply_saved_connection();
+        true
+    }
+}
+
+#[cfg(test)]
+mod drawer_tests {
+    use super::*;
+
+    fn filled_app() -> App {
+        let mut app = App::model(Settings::default(), None, None);
+        let doc = catalog::Document {
+            name: "Test".into(),
+            source: None,
+            metadata: Default::default(),
+            unavailable: vec![],
+            profiles: (0..256)
+                .map(|i| eivro::import::Profile {
+                    name: format!("🌏 Server {i}"),
+                    uri: "ss://synthetic".into(),
+                })
+                .collect(),
+        };
+        app.settings.subscriptions.push(doc.into_subscription(1));
+        app
+    }
+
+    #[test]
+    fn catalog_drawer_moves_continuously_past_the_viewport_edge() {
+        let ctx = egui::Context::default();
+        crate::emoji::install(&ctx);
+        let mut app = filled_app();
+        let mut left = Vec::new();
+        let mut costs = Vec::new();
+        for frame in 0..90 {
+            app.catalog_open = (3..62).contains(&frame);
+            let start = std::time::Instant::now();
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        Vec2::new(960.0, 760.0),
+                    )),
+                    time: Some(frame as f64 / 60.0),
+                    ..Default::default()
+                },
+                |ctx| app.catalog(ctx, app.palette()),
+            );
+            if (30..62).contains(&frame) {
+                costs.push(start.elapsed().as_micros());
+            }
+            if (61..75).contains(&frame) {
+                let rect = egui::AreaState::load(&ctx, egui::Id::new("server-catalog"))
+                    .unwrap()
+                    .rect();
+                left.push(rect.left());
+            }
+        }
+        assert!(left.windows(2).all(|pair| pair[0] <= pair[1]));
+        costs.sort_unstable();
+        eprintln!(
+            "256 profiles: median {} µs; closing x coordinates {left:?}",
+            costs[costs.len() / 2]
+        );
+        assert!(
+            left[10] - left[0] > 250.0,
+            "drawer sticks to the window edge: {left:?}"
+        );
+    }
+
+    #[test]
+    fn reselecting_current_server_closes_catalog_without_restarting() {
+        let mut app = filled_app();
+        app.want_connected = true;
+        app.running = true;
+        assert!(app.select_catalog_profile(0, 0));
+        assert!(app.running && app.want_connected);
+        assert!(!app.stopping && app.recovery.due.is_none() && app.error.is_none());
+    }
+
+    #[test]
+    fn switching_connection_can_be_cancelled_but_explicit_stop_finishes_first() {
+        let mut app = filled_app();
+        app.want_connected = true;
+        app.stopping = true;
+        app.reconnect_pending = true;
+        assert_eq!(app.connection_controls_state(), ("Переключение…", true));
+        app.want_connected = false;
+        app.reconnect_pending = false;
+        assert_eq!(app.connection_controls_state(), ("Отключение…", false));
     }
 }

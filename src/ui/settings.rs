@@ -281,7 +281,7 @@ impl App {
                     self.recovery.exhausted = true;
                 }
                 if reconnect {
-                    self.reconfigure();
+                    self.apply_saved_connection();
                 }
             }
         }

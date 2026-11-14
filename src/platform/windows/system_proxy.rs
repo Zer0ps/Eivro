@@ -190,6 +190,17 @@ pub fn recover_stale() -> Result<()> {
     };
     restore()
 }
+fn desired(port: u16) -> Proxy {
+    Proxy {
+        flags: PROXY_TYPE_DIRECT | PROXY_TYPE_PROXY,
+        server: format!("http=127.0.0.1:{port};https=127.0.0.1:{port};socks=127.0.0.1:{port}"),
+        bypass: "localhost;127.*;[::1]".into(),
+        auto_url: String::new(),
+    }
+}
+pub(crate) fn active_for(port: u16) -> Result<bool> {
+    Ok(read()? == desired(port))
+}
 pub fn guard(port: u16) -> Result<bool> {
     if port < 1024 {
         return Err("Некорректный порт прокси.".into());
@@ -197,12 +208,7 @@ pub fn guard(port: u16) -> Result<bool> {
     let _lock = lock()?.ok_or("Системный прокси уже используется другим Eivro.")?;
     restore()?;
     let before = read()?;
-    let applied = Proxy {
-        flags: PROXY_TYPE_DIRECT | PROXY_TYPE_PROXY,
-        server: format!("http=127.0.0.1:{port};https=127.0.0.1:{port};socks=127.0.0.1:{port}"),
-        bypass: "localhost;127.*;[::1]".into(),
-        auto_url: String::new(),
-    };
+    let applied = desired(port);
     let journal = Journal {
         before,
         applied: applied.clone(),

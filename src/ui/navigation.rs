@@ -17,7 +17,6 @@ impl App {
             (Page::Connection, "Соединение"),
             (Page::Subscriptions, "Подписки"),
             (Page::Routes, "Маршруты"),
-            #[cfg(target_os = "linux")]
             (Page::Diagnostics, "Диагностика"),
             (Page::Settings, "Настройки"),
         ] {
@@ -226,13 +225,8 @@ impl App {
                     }
                     egui::ScrollArea::vertical()
                         .id_salt("navigation-items")
-                        .max_height(
-                            (content.available_height()
-                                - if cfg!(target_os = "linux") { 72.0 } else { 0.0 })
-                            .max(50.0),
-                        )
+                        .max_height((content.available_height() - 72.0).max(50.0))
                         .show(&mut content, |ui| self.navigation_items(ui, ctx, p));
-                    #[cfg(target_os = "linux")]
                     {
                         content.add_space((content.available_height() - 59.0).max(12.0));
                         self.navigation_item(&mut content, ctx, p, Page::Information, "Информация");
@@ -251,7 +245,6 @@ impl App {
                     Page::Routes => 1020.0,
                     Page::Subscriptions => 900.0,
                     Page::Settings => 760.0,
-                    #[cfg(target_os = "linux")]
                     Page::Diagnostics | Page::Information => 760.0,
                 };
                 let width = ui.available_width().min(limit);
@@ -287,9 +280,7 @@ impl App {
                     Page::Subscriptions => self.subscriptions_page(&mut content, ctx, p),
                     Page::Routes => self.routes_page(&mut content, ctx, p),
                     Page::Settings => self.settings_page(&mut content, ctx, p),
-                    #[cfg(target_os = "linux")]
                     Page::Diagnostics => self.diagnostics_page(&mut content, ctx, p),
-                    #[cfg(target_os = "linux")]
                     Page::Information => self.information_page(&mut content, ctx, p),
                 }
             });
@@ -311,7 +302,6 @@ impl App {
                         .max_height((ctx.content_rect().height() - 105.0).max(90.0))
                         .show(ui, |ui| {
                             self.navigation_items(ui, ctx, p);
-                            #[cfg(target_os = "linux")]
                             {
                                 ui.add_space(12.0);
                                 self.navigation_item(ui, ctx, p, Page::Information, "Информация");

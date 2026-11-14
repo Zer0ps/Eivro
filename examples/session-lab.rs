@@ -50,7 +50,10 @@ fn run() -> eivro::Result<()> {
         .read_line(&mut frame)
         .map_err(|_| "Control pipe closed")?;
     drop(session);
+    #[cfg(target_os = "linux")]
     controller.retire()?;
+    #[cfg(not(target_os = "linux"))]
+    controller.release()?;
     println!("STOPPED");
     Ok(())
 }

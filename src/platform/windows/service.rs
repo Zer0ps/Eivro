@@ -146,14 +146,14 @@ pub fn is_service_process(pid: u32) -> bool {
             && status.dwCurrentState == SERVICE_RUNNING
     }
 }
+pub(crate) fn installed_helper_path() -> Option<std::path::PathBuf> {
+    let binary = native::installed_dir().ok()?.join("eivro-tun.exe");
+    (native::protected_binary(&binary) && open(SERVICE_QUERY_STATUS).is_ok()).then_some(binary)
+}
 pub fn installed_version_matches() -> bool {
-    let Ok(dir) = native::installed_dir() else {
+    let Some(binary) = installed_helper_path() else {
         return false;
     };
-    let binary = dir.join("eivro-tun.exe");
-    if !native::protected_binary(&binary) || open(SERVICE_QUERY_STATUS).is_err() {
-        return false;
-    }
     crate::process::child_command(&binary)
         .arg("--version")
         .stdout(std::process::Stdio::piped())

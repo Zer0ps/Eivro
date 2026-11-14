@@ -21,6 +21,10 @@ use std::{
     sync::Mutex,
     time::{Duration, Instant},
 };
+pub const AUTHORIZATION_DENIED: &str = "Запрос прав macOS отменён.";
+pub const AUTHORIZATION_FAILED: &str =
+    "Не удалось получить права macOS. Повторите подключение вручную.";
+
 #[derive(Default)]
 struct State {
     stream: Option<UnixStream>,
@@ -32,18 +36,11 @@ pub struct Controller {
 }
 impl Controller {
     pub fn release(&self) -> Result<()> {
-        let mut state = self.state.lock().map_err(|_| "Помощник занят.")?;
-        if let Some(mut stream) = state.stream.take() {
-            stream
-                .set_read_timeout(Some(Duration::from_secs(10)))
-                .map_err(|_| "Канал помощника недоступен.")?;
-            wire::send(&mut stream, &Request::Stop {})?;
-            match wire::receive(&mut stream)? {
-                Reply::Stopped => state.stream = Some(stream),
-                Reply::Failed { message } => return Err(message),
-                _ => return Err("Неверный ответ помощника.".into()),
-            }
-        }
+        // run_session returns its channel only after the helper acknowledged
+        // cleanup. Drop that idle channel locally; sending another Stop here
+        // unnecessarily makes the GUI thread wait on a helper round trip.
+        let mut state = self.state.try_lock().map_err(|_| "Помощник занят.")?;
+        state.stream.take();
         Ok(())
     }
     pub fn run_session(
@@ -120,13 +117,9 @@ impl Controller {
                     }
                     Reply::Denied => {
                         state.grant.take();
-                        return Err(
-                            "Права macOS больше не действуют. Повторите подключение.".into()
-                        );
+                        return Err(AUTHORIZATION_FAILED.into());
                     }
-                    Reply::Failed { message } => {
-                        return if stopping { Ok(()) } else { Err(message) };
-                    }
+                    Reply::Failed { message } => return Err(message),
                     _ => return Err("Неверный ответ помощника.".into()),
                 }
             }
@@ -155,5 +148,22 @@ pub(crate) fn connect() -> Result<UnixStream> {
     match wire::receive(&mut stream)? {
         Reply::Hello { version } if version == env!("CARGO_PKG_VERSION") => Ok(stream),
         _ => Err("Версия системного помощника не совпадает. Обновите Eivro.pkg.".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn release_only_closes_the_acknowledged_idle_channel() {
+        use std::io::Read;
+        let (client, mut peer) = UnixStream::pair().unwrap();
+        let controller = Controller::default();
+        controller.state.lock().unwrap().stream = Some(client);
+        controller.release().unwrap();
+        // There was already a Stopped acknowledgement before the channel
+        // could enter this state. A redundant Stop could block UI on I/O.
+        assert_eq!(peer.read(&mut [0u8; 1]).unwrap(), 0);
     }
 }

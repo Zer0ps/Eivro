@@ -5,7 +5,6 @@ impl App {
         if self.quitting {
             return;
         }
-        #[cfg(target_os = "linux")]
         self.diagnostics.invalidate_and_cancel();
         self.quitting = true;
         self.want_connected = false;

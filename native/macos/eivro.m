@@ -47,6 +47,82 @@ char *eivro_uplink(void) {
         return result;
     }
 }
+// Export facts needed by diagnostics, without copying PAC URLs, exception
+// domains, server names, or the full preferences dictionary into the GUI.
+char *eivro_diagnostic_settings(uint16_t port, const char *target) {
+    @autoreleasepool {
+        SCDynamicStoreRef store = SCDynamicStoreCreate(NULL, CFSTR("Eivro diagnostics"), NULL, NULL);
+        if (!store)
+            return NULL;
+        NSDictionary *route = primary(store);
+        NSString *name = route[@"PrimaryInterface"];
+        NSString *service = route[@"PrimaryService"];
+        NSString *key = [service isKindOfClass:[NSString class]]
+                            ? [NSString stringWithFormat:@"State:/Network/Service/%@/DNS", service]
+                            : nil;
+        NSArray *dns = key ? state(store, key)[@"ServerAddresses"] : nil;
+        NSDictionary *proxies = CFBridgingRelease(SCDynamicStoreCopyProxies(store));
+        NSMutableDictionary *facts = [NSMutableDictionary dictionary];
+        // Supplemental DNS domains in the dynamic store are local evidence;
+        // per-app DNS and resolvers registered outside these services may differ.
+        if (target) {
+            NSString *host = [NSString stringWithUTF8String:target];
+            NSArray *keys = CFBridgingRelease(SCDynamicStoreCopyKeyList(
+                store, CFSTR("State:/Network/Service/.*/DNS")));
+            NSUInteger longest = 0;
+            NSMutableSet *matching = [NSMutableSet set];
+            for (NSString *serviceKey in keys) {
+                NSDictionary *serviceDNS = state(store, serviceKey);
+                NSArray *domains = serviceDNS[@"SupplementalMatchDomains"];
+                if (![domains isKindOfClass:[NSArray class]])
+                    continue;
+                for (id domain in domains) {
+                    if (![domain isKindOfClass:[NSString class]])
+                        continue;
+                    NSString *suffix = [[domain lowercaseString]
+                        stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"."]];
+                    if (!suffix.length || suffix.length < longest ||
+                        (![host isEqual:suffix] && ![host hasSuffix:[@"." stringByAppendingString:suffix]]))
+                        continue;
+                    if (suffix.length > longest)
+                        [matching removeAllObjects];
+                    longest = suffix.length;
+                    NSString *prefix = [serviceKey substringToIndex:serviceKey.length - 3];
+                    id interface = state(store, [prefix stringByAppendingString:@"IPv4"])[@"InterfaceName"];
+                    if (![interface isKindOfClass:[NSString class]])
+                        interface = state(store, [prefix stringByAppendingString:@"IPv6"])[@"InterfaceName"];
+                    [matching addObject:[interface isKindOfClass:[NSString class]] ? interface : @""];
+                }
+            }
+            if (longest && matching.count == 1 && ![matching containsObject:@""])
+                facts[@"scoped_interface"] = matching.anyObject;
+        }
+        CFRelease(store);
+        if ([name isKindOfClass:[NSString class]])
+            facts[@"uplink"] = name;
+        if ([dns isKindOfClass:[NSArray class]]) {
+            facts[@"dns_count"] = @(dns.count);
+            facts[@"tun_dns"] = @([dns isEqualToArray:@[ @"172.31.250.2" ]]);
+        }
+        facts[@"tun_present"] = @((bool)(if_nametoindex("utun233") != 0));
+        if (proxies) {
+            bool automatic = [proxies[@"ProxyAutoConfigEnable"] boolValue] ||
+                             [proxies[@"ProxyAutoDiscoveryEnable"] boolValue];
+            bool any = automatic;
+            bool local = !automatic;
+            for (NSString *protocol in @[ @"HTTP", @"HTTPS", @"SOCKS" ]) {
+                bool enabled = [proxies[[protocol stringByAppendingString:@"Enable"]] boolValue];
+                any |= enabled;
+                local &= enabled &&
+                         [proxies[[protocol stringByAppendingString:@"Proxy"]] isEqual:@"127.0.0.1"] &&
+                         [proxies[[protocol stringByAppendingString:@"Port"]] integerValue] == port;
+            }
+            facts[@"proxy_enabled"] = @(any);
+            facts[@"proxy_local"] = @(local);
+        }
+        return jsonCopy(facts);
+    }
+}
 char *eivro_interfaces(void) {
     @autoreleasepool {
         struct ifaddrs *list = NULL;
@@ -138,7 +214,12 @@ char *eivro_settings_plan(uint16_t port, bool tun) {
             return NULL;
         }
         NSString *primaryID = primary(store)[@"PrimaryService"];
-        NSArray *services = CFBridgingRelease(SCNetworkServiceCopyAll(prefs));
+        // Only services in the user's current network location participate.
+        // Other locations can contain enabled services with independent proxies.
+        SCNetworkSetRef location = SCNetworkSetCopyCurrent(prefs);
+        NSArray *services = location ? CFBridgingRelease(SCNetworkSetCopyServices(location)) : nil;
+        if (location)
+            CFRelease(location);
         NSMutableArray *plan = [NSMutableArray array];
         for (id value in services) {
             SCNetworkServiceRef service = (__bridge SCNetworkServiceRef)value;
@@ -314,7 +395,8 @@ bool eivro_settings_apply(const char *text, bool restore) {
         return ok;
     }
 }
-const void *eivro_authorize(uint8_t *token) {
+const void *eivro_authorize(uint8_t *token, bool *cancelled) {
+    *cancelled = false;
     AuthorizationRef auth = NULL;
     AuthorizationItem item = {kAuthorizationRightExecute, 0, NULL, 0};
     AuthorizationRights rights = {1, &item};
@@ -331,6 +413,7 @@ const void *eivro_authorize(uint8_t *token) {
                                 kAuthorizationFlagInteractionAllowed |
                                     kAuthorizationFlagExtendRights | kAuthorizationFlagPreAuthorize,
                                 NULL);
+    *cancelled = result == errAuthorizationCanceled;
     AuthorizationExternalForm form;
     if (result != errAuthorizationSuccess ||
         AuthorizationMakeExternalForm(auth, &form) != errAuthorizationSuccess) {

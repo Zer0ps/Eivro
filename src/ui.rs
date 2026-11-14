@@ -1,7 +1,6 @@
 mod connection;
 mod design;
 mod desktop;
-#[cfg(target_os = "linux")]
 mod diagnostics;
 mod dialogs;
 mod effects;
@@ -32,9 +31,7 @@ enum Page {
     Connection,
     Subscriptions,
     Routes,
-    #[cfg(target_os = "linux")]
     Diagnostics,
-    #[cfg(target_os = "linux")]
     Information,
     Settings,
 }
@@ -57,7 +54,6 @@ pub struct App {
     network_due: Option<std::time::Instant>,
     network_initialized: bool,
     settings: Settings,
-    #[cfg(target_os = "linux")]
     diagnostics: diagnostics::State,
     path: Option<PathBuf>,
     session: Option<Session>,
@@ -204,7 +200,6 @@ impl App {
         }
         #[cfg(feature = "qa")]
         match std::env::var("EIVRO_QA_PAGE").as_deref() {
-            #[cfg(target_os = "linux")]
             Ok(
                 page @ ("diagnostics"
                 | "diagnostics-error"
@@ -323,7 +318,6 @@ impl App {
             network_due: None,
             network_initialized: false,
             settings,
-            #[cfg(target_os = "linux")]
             diagnostics: diagnostics::State::default(),
             path,
             session: None,
@@ -440,12 +434,22 @@ impl App {
                             self.error = None;
                             continue;
                         }
+                        #[cfg(target_os = "macos")]
+                        if e == eivro::tun::AUTHORIZATION_DENIED
+                            || e == eivro::tun::AUTHORIZATION_FAILED
+                        {
+                            self.want_connected = false;
+                            self.recovery.cancel();
+                            if e == eivro::tun::AUTHORIZATION_DENIED {
+                                self.error = None;
+                            }
+                            continue;
+                        }
                         let was_connected =
                             self.running || self.recovery.recovering || self.guard_session;
                         let protected =
                             self.settings.kill_switch && self.settings.mode == Mode::Tun;
-                        if self.want_connected && !e.contains("Доступ TUN отменён") && was_connected
-                        {
+                        if self.want_connected && was_connected {
                             if self.settings.reconnect {
                                 self.recovery.recovering = true;
                                 if !self.recovery.failed(std::time::Instant::now()) && !protected {
@@ -526,7 +530,7 @@ impl App {
                             .selected_profile()
                             .map(catalog::effective_connection)
                     {
-                        self.reconfigure();
+                        self.apply_saved_connection();
                     }
                 }
                 Err(e) => {
@@ -594,8 +598,6 @@ impl App {
     }
     fn reconfigure(&mut self) {
         #[cfg(target_os = "linux")]
-        self.diagnostics.invalidate_and_cancel();
-        #[cfg(target_os = "linux")]
         if self.want_connected
             && self.settings.mode == Mode::Tun
             && let Err(error) = eivro::domain_dns::check_ranges()
@@ -603,6 +605,14 @@ impl App {
             self.error = Some(format!("{error} Переподключение не выполнено."));
             return;
         }
+        self.apply_saved_connection();
+    }
+
+    /// A settings transaction already checked the live TUN ranges before saving.
+    /// Rechecking here could reject the switch *after* the saved selection changed.
+    /// Runtime-only reconnects still preflight above, and the helper checks on Start.
+    fn apply_saved_connection(&mut self) {
+        self.diagnostics.invalidate_and_cancel();
         if self.want_connected
             && let Some(session) = &mut self.session
         {
@@ -618,10 +628,17 @@ impl App {
         }
     }
     fn connect(&mut self, ctx: &egui::Context) {
-        if self.quitting {
+        if self.quitting || (self.stopping && !self.want_connected) {
             return;
         }
-        #[cfg(target_os = "linux")]
+        if !self.want_connected && self.settings.selected_profile().is_none() {
+            // The tray toggle is also available before a user imports a server.
+            // Bring them to the same picker the connection page offers.
+            self.show_window(ctx);
+            self.navigate(Page::Connection, ctx);
+            self.catalog_open = true;
+            return;
+        }
         self.diagnostics.invalidate_and_cancel();
         let wanted = self.want_connected;
         self.recovery.cancel();
@@ -639,7 +656,6 @@ impl App {
                 self.error = Some(e);
             }
         } else {
-            #[cfg(target_os = "linux")]
             if self.diagnostics_connection_blocked() {
                 return;
             }
@@ -653,7 +669,6 @@ impl App {
         if self.quitting {
             return;
         }
-        #[cfg(target_os = "linux")]
         self.diagnostics.invalidate_and_cancel();
         if self.settings.mode != Mode::Tun || !self.settings.kill_switch {
             self.guard_session = false;
@@ -864,7 +879,6 @@ impl eframe::App for App {
             }
         });
         self.poll_network(ctx);
-        #[cfg(target_os = "linux")]
         self.poll_diagnostics(ctx);
         if self.appearance {
             self.page = Page::Settings;
@@ -920,14 +934,13 @@ impl eframe::App for App {
         self.shell(ctx, p);
         self.catalog(ctx, p);
         self.dialogs(ctx, p);
-        #[cfg(target_os = "linux")]
         self.diagnostics_dialog(ctx, p);
         #[cfg(target_os = "linux")]
         self.quit_dialog(ctx, p);
         #[cfg(target_os = "linux")]
         let exit_modal = self.exit_error.is_some() || self.diagnostics.modal_open();
         #[cfg(not(target_os = "linux"))]
-        let exit_modal = false;
+        let exit_modal = self.diagnostics.modal_open();
         let modal_open = exit_modal
             || self.navigation_overlay
             || self.catalog_open

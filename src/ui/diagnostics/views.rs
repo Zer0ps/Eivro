@@ -248,6 +248,7 @@ impl App {
                     ui.add_space(6.0);
                     ui.label(RichText::new("Настройки сети и короткий запрос к сайту. Без адреса — example.com.").small().color(p.muted));
                     ui.add_space(4.0);
+                    #[cfg(target_os="linux")]
                     egui::CollapsingHeader::new("Дополнительно").id_salt("diagnostics-advanced").show(ui, |ui| {
                         if self.settings.kill_switch { self.diagnostics.direct_test = false; }
                         ui.add_enabled(!self.settings.kill_switch, egui::Checkbox::new(&mut self.diagnostics.direct_test, "Сравнить с доступом вне VPN"));

@@ -42,7 +42,7 @@ impl crate::tun::Backend for SystemBackend {
             crate::config::Mode::Tun,
             &crate::network::interfaces(),
         )?;
-        crate::domain_dns::configure(&mut config, req)?;
+        crate::domain_dns::configure(&mut config)?;
         self.gateways.configure(&mut config, req)?;
         if self.dns.is_none() {
             self.dns = Some(crate::domain_dns::state::State::open()?);

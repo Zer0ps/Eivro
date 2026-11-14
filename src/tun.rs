@@ -17,6 +17,7 @@ use std::{
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CommandMessage {
+    Hello {},
     Retire {},
     Start {
         request: ConnectRequest,
@@ -138,6 +139,14 @@ pub fn serve_backend_with_shutdown(
                 let message: CommandMessage =
                     serde_json::from_slice(&pending[..end]).map_err(|_| "request")?;
                 pending.drain(..=end);
+                // No resources or session state are touched by the authorization handshake.
+                if matches!(message, CommandMessage::Hello {}) {
+                    output
+                        .write_all(b"AUTHORIZED\n")
+                        .and_then(|_| output.flush())
+                        .map_err(|_| "reply")?;
+                    continue;
+                }
                 // Reject predictable conflicts without dropping the current core.
                 if let CommandMessage::Start { request } = &message
                     && let Err(error) = backend.preflight(request)
@@ -158,6 +167,7 @@ pub fn serve_backend_with_shutdown(
                 let mut failure = None;
                 let mut failure_tag = "START_ERROR";
                 let reply = match message {
+                    CommandMessage::Hello {} => unreachable!("handled above"),
                     CommandMessage::Retire {} => {
                         match backend.stop(false, false).and_then(|_| backend.retire()) {
                             Ok(()) => b"RETIRED\n".as_slice(),
@@ -380,6 +390,7 @@ struct Helper {
     output: ChildStdout,
     pid: OwnedFd,
     pending: Vec<u8>,
+    authorized: bool,
     request_sent: bool,
     was_ready: bool,
 }
@@ -409,6 +420,7 @@ impl Helper {
             output,
             pid,
             pending: Vec::new(),
+            authorized: false,
             request_sent: false,
             was_ready: false,
         })
@@ -434,6 +446,47 @@ impl Helper {
         }
         Ok(lines)
     }
+    /// pkexec initially owns the pipe while the authorization dialog is open.
+    /// A writable pipe alone is no evidence that a helper can receive Stop.
+    fn authorize(&mut self, watch: &UnixStream, xray: i32) -> Result<bool> {
+        if self.authorized {
+            return Ok(true);
+        }
+        // This first frame fits within PIPE_BUF and the new, empty pipe.
+        self.input
+            .as_mut()
+            .ok_or("Канал TUN закрыт.")?
+            .write_all(b"{\"command\":\"hello\"}\n")
+            .map_err(|_| "Канал TUN закрыт.")?;
+        loop {
+            let mut fds = [
+                process::pollfd(watch.as_raw_fd(), libc::POLLIN),
+                process::pollfd(self.output.as_raw_fd(), libc::POLLIN),
+                process::pollfd(self.pid.as_raw_fd(), libc::POLLIN),
+                process::pollfd(xray, libc::POLLIN),
+            ];
+            process::poll(&mut fds)?;
+            if fds[0].revents != 0 {
+                return Ok(false);
+            }
+            if fds[1].revents != 0 {
+                let lines = self.read_lines()?;
+                if lines.as_slice() == ["AUTHORIZED"] {
+                    self.authorized = true;
+                    return Ok(true);
+                }
+                if !lines.is_empty() {
+                    return Err("Помощник TUN не подтвердил готовность.".into());
+                }
+            }
+            if fds[2].revents != 0 {
+                return Err("Помощник TUN завершился.".into());
+            }
+            if fds[3].revents != 0 {
+                return Err("Xray завершился во время запроса прав TUN.".into());
+            }
+        }
+    }
     fn start(&mut self, req: &ConnectRequest, watch: &UnixStream, xray: i32) -> Result<bool> {
         let mut data = serde_json::to_vec(&CommandMessage::Start {
             request: req.clone(),
@@ -444,6 +497,9 @@ impl Helper {
             return Err("Слишком большая конфигурация TUN.".into());
         }
         self.request_sent = false;
+        if !self.authorize(watch, xray)? {
+            return Ok(false);
+        }
         let mut offset = 0;
         loop {
             let input = self.input.as_mut().ok_or("Канал TUN закрыт.")?;
@@ -585,7 +641,7 @@ mod tests {
     #[test]
     fn helper_loss_before_ready_requires_cleanup_confirmation() {
         let child = Command::new("python3")
-            .args(["-c", "import sys; sys.stdin.readline(); sys.exit(1)"])
+            .args(["-c", "import sys; sys.stdin.readline(); print('AUTHORIZED', flush=True); sys.stdin.readline(); sys.exit(1)"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -677,6 +733,40 @@ mod tests {
     }
 
     #[test]
+    fn cancellation_at_password_prompt_does_not_queue_start_or_wait_for_stop() {
+        let directory =
+            std::env::temp_dir().join(format!("eivro-authorization-test-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let seen = directory.join("first-command");
+        let child = Command::new("python3")
+            .args(["-c", "import sys,json,pathlib,time; pathlib.Path(sys.argv[1]).write_text(json.loads(sys.stdin.readline())['command']); time.sleep(3)"])
+            .arg(&seen).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+        let controller = Controller {
+            helper: Mutex::new(Some(Helper::from_child(child).unwrap())),
+            ..Default::default()
+        };
+        let (cancel, watch) = UnixStream::pair().unwrap();
+        let request =
+            serde_json::from_str(r#"{"uri":"synthetic","bypass":[],"port":2080}"#).unwrap();
+        std::thread::scope(|scope| {
+            let session =
+                scope.spawn(|| controller.run(&request, &watch, -1, |_| panic!("not authorized")));
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !std::fs::read_to_string(&seen).is_ok_and(|s| !s.is_empty()) {
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let start = Instant::now();
+            cancel.shutdown(std::net::Shutdown::Both).unwrap();
+            session.join().unwrap().unwrap();
+            assert!(start.elapsed() < Duration::from_secs(2));
+            assert_eq!(std::fs::read_to_string(&seen).unwrap(), "hello");
+        });
+        std::fs::remove_dir_all(directory).unwrap();
+        assert!(controller.retire().is_ok());
+    }
+
+    #[test]
     fn cancelled_authorization_is_latched_across_pipe_exit_races() {
         for code in [126, 127] {
             let child = Command::new("python3")
@@ -735,7 +825,7 @@ mod tests {
         };
         let controller = Controller {
             helper: Mutex::new(Some(spawn(
-                "import sys,json\nfor line in sys.stdin:\n c=json.loads(line)\n if c['command']=='start': print('READY',flush=True)\n else: sys.exit(0)\n",
+                "import sys,json\nfor line in sys.stdin:\n c=json.loads(line)\n if c['command']=='hello': print('AUTHORIZED',flush=True); continue\n if c['command']=='start': print('READY',flush=True)\n else: sys.exit(0)\n",
             ))),
             ..Default::default()
         };
@@ -767,7 +857,7 @@ mod tests {
         assert!(controller.helper.lock().unwrap().is_none());
 
         *controller.helper.lock().unwrap() = Some(spawn(
-            "import sys,json\nfor line in sys.stdin:\n c=json.loads(line)\n print({'start':'READY','stop':'STOPPED','retire':'RETIRED'}[c['command']],flush=True)\n",
+            "import sys,json\nfor line in sys.stdin:\n c=json.loads(line)\n print({'hello':'AUTHORIZED','start':'READY','stop':'STOPPED','retire':'RETIRED'}[c['command']],flush=True)\n",
         ));
         let (stop, watch) = UnixStream::pair().unwrap();
         let mut stop = Some(stop);
@@ -805,7 +895,7 @@ mod tests {
 
     #[test]
     fn reconnect_preserves_guard_but_explicit_stop_releases_it() {
-        let code = "import sys,json\ni=0\nfor line in sys.stdin:\n c=json.loads(line)\n if c['command']=='start': print('READY',flush=True)\n else:\n  assert c['preserve_protection']==(i==0),c\n  i+=1\n  print('STOPPED',flush=True)\n";
+        let code = "import sys,json\ni=0\nfor line in sys.stdin:\n c=json.loads(line)\n if c['command']=='hello': print('AUTHORIZED',flush=True); continue\n if c['command']=='start': print('READY',flush=True)\n else:\n  assert c['preserve_protection']==(i==0),c\n  i+=1\n  print('STOPPED',flush=True)\n";
         let child = Command::new("python3")
             .args(["-u", "-c", code])
             .stdin(Stdio::piped())
@@ -838,7 +928,7 @@ mod tests {
     }
     #[test]
     fn controller_reuses_one_authorized_process_for_multiple_connections() {
-        let code = "import sys,json\nfor line in sys.stdin:\n c=json.loads(line)\n print('READY' if c['command']=='start' else 'STOPPED',flush=True)\n";
+        let code = "import sys,json\nfor line in sys.stdin:\n c=json.loads(line)\n print({'hello':'AUTHORIZED','start':'READY','stop':'STOPPED'}[c['command']],flush=True)\n";
         let child = Command::new("python3")
             .args(["-u", "-c", code])
             .stdin(Stdio::piped())

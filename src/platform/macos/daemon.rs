@@ -274,18 +274,27 @@ fn session(
     if request.kill_switch {
         return Err("Kill switch пока доступен только в Linux.".into());
     }
+    // A previous cleanup may have failed while an idle client kept the daemon
+    // alive. Restore its journal before capturing DNS or resolving the next
+    // server; a later lease must never snapshot our stale network settings.
+    if mode != Mode::Local {
+        recover()?;
+    }
     let links = crate::network::interfaces();
     let mut config = crate::config::generate_with_network(request, mode, &links)?;
     let uplink = native::uplink()?;
     crate::network::validate_interface(&uplink)?;
     let parsed = parse_uri(&request.uri)?;
-    let addresses = crate::resolver::resolve_host(
+    let addresses = match crate::resolver::resolve_host(
         &parsed.host,
         443,
         Instant::now() + Duration::from_secs(10),
         Some(stream),
-    )
-    .map_err(|_| "Не удалось разрешить адрес сервера.")?;
+    ) {
+        Ok(addresses) => addresses,
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => return consume_stop(stream),
+        Err(_) => return Err("Не удалось разрешить адрес сервера.".into()),
+    };
     let ip = addresses
         .iter()
         .find(|a| a.is_ipv4())
@@ -375,11 +384,7 @@ fn session(
         )? {
             // Consume the cancellation frame before acknowledging it. Otherwise
             // the next connection would receive a second, stale Stopped reply.
-            return match wire::receive(stream) {
-                Ok(Request::Stop {}) => Ok(()),
-                Err(_) => Ok(()),
-                _ => Err("Сначала остановите текущее подключение.".into()),
-            };
+            return consume_stop(stream);
         }
     }
     let original = if mode == Mode::Tun {
@@ -387,6 +392,12 @@ fn session(
     } else {
         None
     };
+    // Handoff is asynchronous. A Stop arriving after the HTTPS probe must
+    // never publish settings or a Ready message for the old selection.
+    let mut pending = process::pollfd(stream.as_raw_fd(), libc::POLLIN);
+    if unsafe { libc::poll(&mut pending, 1, 0) } > 0 {
+        return consume_stop(stream);
+    }
     let mut lease = plan.map(|plan| Lease::apply(plan, original)).transpose()?;
     let result = (|| {
         wire::send(stream, &Reply::Ready)?;
@@ -398,19 +409,24 @@ fn session(
         process::poll(&mut fds)?;
         if fds[0].revents != 0 {
             // EOF also ends the session. Any unexpected command closes the lease.
-            match wire::receive(stream) {
-                Ok(Request::Stop {}) => Ok(()),
-                Err(_) => Ok(()),
-                _ => Err("Сначала остановите текущее подключение.".into()),
-            }
+            consume_stop(stream)
         } else {
             Err("Соединение остановлено: процесс ядра завершился.".into())
         }
     })();
     let restored = lease.as_mut().map_or(Ok(()), Lease::restore);
     drop(cores);
-    result.and(restored)
+    restored.and(result)
 }
+
+fn consume_stop(stream: &mut UnixStream) -> Result<()> {
+    match wire::receive(stream) {
+        Ok(Request::Stop {}) => Ok(()),
+        Err(_) => Ok(()), // Owner closed the channel; release all session resources.
+        _ => Err("Сначала остановите текущее подключение.".into()),
+    }
+}
+
 fn secure_directory() -> Result<()> {
     fs::DirBuilder::new()
         .recursive(true)
@@ -456,7 +472,7 @@ impl Lease {
             .map_err(|_| "Не удалось сохранить DNS интерфейса.")? = original;
         let mut lease = Self { plan, active: true };
         if let Err(error) = native::settings_apply(&lease.plan, false) {
-            let _ = lease.restore();
+            lease.restore()?;
             return Err(error);
         }
         Ok(lease)
@@ -504,7 +520,11 @@ fn recover() -> Result<()> {
         .read_to_string(&mut plan)
         .map_err(|_| "Неверные настройки восстановления.")?;
     native::settings_apply(&plan, true)?;
-    fs::remove_file(JOURNAL).map_err(|_| "Не удалось завершить восстановление.".into())
+    fs::remove_file(JOURNAL).map_err(|_| "Не удалось завершить восстановление.")?;
+    if let Ok(mut original) = ORIGINAL_DNS.lock() {
+        *original = None;
+    }
+    Ok(())
 }
 
 // Only override our own temporary DNS value. Other applications' changes are
@@ -528,8 +548,22 @@ pub(crate) fn original_dns(links: &mut [crate::network::Interface]) {
 mod tests {
     use super::*;
 
-    // This test changes only the disposable macOS runner's network preferences.
-    // It is never part of cargo test's default run or an installed executable.
+    #[test]
+    fn cancel_during_endpoint_resolution_consumes_exactly_one_request() {
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        wire::send(&mut client, &Request::Stop {}).unwrap();
+        wire::send(&mut client, &Request::Interfaces {}).unwrap();
+        consume_stop(&mut server).unwrap();
+        assert!(matches!(
+            wire::receive(&mut server).unwrap(),
+            Request::Interfaces {}
+        ));
+        wire::send(&mut client, &Request::Interfaces {}).unwrap();
+        assert!(consume_stop(&mut server).is_err());
+        drop(client);
+        consume_stop(&mut server).unwrap();
+    }
+
     #[test]
     #[ignore = "requires root on a disposable macOS GitHub Actions runner"]
     fn native_preferences_restore_and_recover_after_abandoned_lease() {

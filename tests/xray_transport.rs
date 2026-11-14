@@ -1,20 +1,23 @@
-#![cfg(target_os = "linux")]
+#![cfg(unix)]
 
 //! Loopback-only Xray transport regressions; no TUN, DNS, or user profiles.
+#[cfg(target_os = "linux")]
 use eivro::{
     config::{ConnectRequest, Mode},
-    process::{self, Event, Session},
-    xray,
+    process::{Event, Session},
 };
+use eivro::{process, xray};
 use serde_json::{Value, json};
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     process::{Child, Command, Stdio},
-    sync::Arc,
     thread,
     time::{Duration, Instant},
 };
+
+#[cfg(target_os = "linux")]
+use std::sync::Arc;
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 const UUID: &str = "a3ba7b44-3275-42e7-9a54-30aa2bde0437";
@@ -219,6 +222,7 @@ fn vless_xhttp_stream_one_and_packet_up_transfer_data() {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn tcp_reality_links_transfer_data_through_the_eivro_session() {
     verify_version();

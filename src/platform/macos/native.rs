@@ -12,10 +12,11 @@ unsafe extern "C" {
     pub fn eivro_desktop_appearance(dark: bool);
     fn eivro_interfaces() -> *mut c_char;
     fn eivro_uplink() -> *mut c_char;
+    fn eivro_diagnostic_settings(port: u16, target: *const c_char) -> *mut c_char;
     fn eivro_applications() -> *mut c_char;
     fn eivro_settings_plan(port: u16, tun: bool) -> *mut c_char;
     fn eivro_settings_apply(plan: *const c_char, restore: bool) -> bool;
-    fn eivro_authorize(token: *mut u8) -> *const c_void;
+    fn eivro_authorize(token: *mut u8, cancelled: *mut bool) -> *const c_void;
     fn eivro_verify_authorization(token: *const u8) -> bool;
     fn eivro_authorization_free(handle: *const c_void);
 }
@@ -34,6 +35,21 @@ pub fn interfaces() -> Result<serde_json::Value> {
 }
 pub fn uplink() -> Result<String> {
     take_json(unsafe { eivro_uplink() })
+}
+pub(super) fn diagnostic_settings(
+    port: u16,
+    target: Option<&str>,
+) -> Result<super::diagnostics::NetworkState> {
+    let target = target
+        .map(CString::new)
+        .transpose()
+        .map_err(|_| "Неверный домен.")?;
+    take_json(unsafe {
+        eivro_diagnostic_settings(
+            port,
+            target.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
+        )
+    })
 }
 pub fn applications() -> Vec<(String, String)> {
     take_json(unsafe { eivro_applications() }).unwrap_or_default()
@@ -55,16 +71,20 @@ pub struct Authorization {
     token: [u8; 32],
 }
 impl Authorization {
-    pub fn acquire() -> Result<Self> {
+    pub fn acquire() -> Result<Option<Self>> {
         let mut token = [0; 32];
-        let handle = unsafe { eivro_authorize(token.as_mut_ptr()) };
-        if handle.is_null() {
-            return Err("Доступ TUN отменён или права macOS не предоставлены.".into());
+        let mut cancelled = false;
+        let handle = unsafe { eivro_authorize(token.as_mut_ptr(), &mut cancelled) };
+        if cancelled {
+            return Ok(None);
         }
-        Ok(Self {
+        if handle.is_null() {
+            return Err(crate::tun::AUTHORIZATION_FAILED.into());
+        }
+        Ok(Some(Self {
             handle: handle as usize,
             token,
-        })
+        }))
     }
     pub fn token(&self) -> [u8; 32] {
         self.token

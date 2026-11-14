@@ -35,6 +35,9 @@ unsafe fn ip(address: *const SOCKADDR) -> Option<IpAddr> {
     }
 }
 pub fn interfaces() -> Vec<Interface> {
+    adapters(false, false).unwrap_or_default()
+}
+pub(crate) fn adapters(ipv6_index: bool, include_tun: bool) -> Result<Vec<Interface>> {
     let mut size = 16 * 1024;
     for _ in 0..3 {
         // usize storage supplies the alignment required by the linked API structs.
@@ -53,14 +56,17 @@ pub fn interfaces() -> Vec<Interface> {
             continue;
         }
         if status != ERROR_SUCCESS {
-            return Vec::new();
+            return Err("Windows не вернула список адаптеров.".into());
         }
         let mut links = Vec::new();
         let mut current = first;
         while !current.is_null() {
             let row = unsafe { &*current };
             let name = unsafe { from_wide(row.FriendlyName) };
-            if row.IfType != IF_TYPE_SOFTWARE_LOOPBACK && validate_interface(&name).is_ok() {
+            if row.IfType != IF_TYPE_SOFTWARE_LOOPBACK
+                && (validate_interface(&name).is_ok()
+                    || include_tun && name.eq_ignore_ascii_case(crate::platform::TUN_NAME))
+            {
                 let mut dns = Vec::new();
                 let mut server = row.FirstDnsServerAddress;
                 while !server.is_null() {
@@ -72,7 +78,11 @@ pub fn interfaces() -> Vec<Interface> {
                 }
                 links.push(Interface {
                     name,
-                    index: unsafe { row.Anonymous1.Anonymous.IfIndex },
+                    index: if ipv6_index {
+                        row.Ipv6IfIndex
+                    } else {
+                        unsafe { row.Anonymous1.Anonymous.IfIndex }
+                    },
                     up: row.OperStatus == IfOperStatusUp,
                     dns,
                 });
@@ -80,9 +90,9 @@ pub fn interfaces() -> Vec<Interface> {
             current = row.Next;
         }
         links.sort_by(|a, b| a.name.cmp(&b.name));
-        return links;
+        return Ok(links);
     }
-    Vec::new()
+    Err("Список адаптеров меняется. Повторите проверку.".into())
 }
 pub fn uplink(address: IpAddr) -> Result<String> {
     let mut socket: SOCKADDR_INET = unsafe { std::mem::zeroed() };
@@ -100,7 +110,7 @@ pub fn uplink(address: IpAddr) -> Result<String> {
     if unsafe { GetBestInterfaceEx((&socket as *const SOCKADDR_INET).cast(), &mut index) } != 0 {
         return Err("Нет маршрута к VPN-серверу.".into());
     }
-    interfaces()
+    adapters(address.is_ipv6(), false)?
         .into_iter()
         .find(|link| link.index == index && link.up)
         .map(|link| link.name)

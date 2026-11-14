@@ -40,7 +40,6 @@ pub(super) enum ButtonTone {
     Primary,
     Secondary,
     Quiet,
-    Selected,
     Danger,
     Segment(bool),
 }
@@ -63,7 +62,6 @@ pub(super) fn command(
         ),
         ButtonTone::Secondary => (p.raised, p.text),
         ButtonTone::Quiet => (p.card, p.muted),
-        ButtonTone::Selected => (p.soft, p.accent),
         ButtonTone::Danger => (mix(p.card, p.error, 0.08), p.error),
     };
     let background = ui.painter().add(egui::Shape::Noop);
@@ -72,17 +70,12 @@ pub(super) fn command(
         .stroke(Stroke::NONE)
         .corner_radius(9)
         .min_size(Vec2::new(size.x, size.y.max(36.0)));
-    if matches!(
-        tone,
-        ButtonTone::Selected | ButtonTone::Quiet | ButtonTone::Segment(_)
-    ) {
-        button = button.right_text(
-            if matches!(tone, ButtonTone::Selected | ButtonTone::Segment(true)) {
-                "✓"
-            } else {
-                ""
-            },
-        );
+    if matches!(tone, ButtonTone::Quiet | ButtonTone::Segment(_)) {
+        button = button.right_text(if matches!(tone, ButtonTone::Segment(true)) {
+            "✓"
+        } else {
+            ""
+        });
     }
     let response = if size.x > 0.0 {
         ui.add_sized(Vec2::new(size.x, size.y.max(36.0)), button)
@@ -246,13 +239,11 @@ pub(super) fn icon(ui: &egui::Ui, center: egui::Pos2, page: Page, color: Color32
                 painter.circle_filled(pos(x, y), 2.3, color);
             }
         }
-        #[cfg(target_os = "linux")]
         Page::Information => {
             painter.circle_stroke(center, 7.5, s);
             painter.circle_filled(pos(0.0, -3.5), 1.0, color);
             painter.line_segment([pos(0.0, -0.5), pos(0.0, 4.0)], s);
         }
-        #[cfg(target_os = "linux")]
         Page::Diagnostics => {
             painter.circle_stroke(center, 8.0, s);
             painter.add(egui::Shape::line(
@@ -375,8 +366,11 @@ impl App {
         }
 
         if self.network_result.is_some() {
+            // A manual refresh may arrive after the current scan took its snapshot.
+            self.network_due.get_or_insert_with(std::time::Instant::now);
             return;
         }
+        self.network_due = None;
         let (tx, rx) = mpsc::channel();
         let ctx = ctx.clone();
         self.network_result = Some(rx);
@@ -386,7 +380,6 @@ impl App {
         });
     }
     pub(super) fn schedule_network_scan(&mut self, ctx: &egui::Context) {
-        #[cfg(target_os = "linux")]
         self.diagnostics.invalidate();
         if self.settings.connections.is_empty() {
             return;
@@ -435,39 +428,48 @@ impl App {
         {
             self.scan_network(ctx);
         }
-        if let Some(due) = self.network_due {
-            if std::time::Instant::now() >= due {
-                self.network_due = None;
-                self.scan_network(ctx);
-            } else {
-                ctx.request_repaint_after(due.saturating_duration_since(std::time::Instant::now()));
+        let result = self.network_result.as_ref().map(Receiver::try_recv);
+        if matches!(result, Some(Err(mpsc::TryRecvError::Disconnected))) {
+            self.network_result = None;
+        }
+        if let Some(Ok(links)) = result {
+            self.network_result = None;
+            // A newer notification arrived while the worker was in flight.
+            // Applying the older snapshot could restart an active VPN twice.
+            if self.network_due.is_none() {
+                let changed = self.settings.connections.iter().any(|connection| {
+                    let state = |links: &[eivro::network::Interface]| {
+                        let server = connection.servers(links)?.first().copied()?;
+                        let index = links.iter().find(|l| l.name == connection.interface)?.index;
+                        Some((index, server))
+                    };
+                    self.settings.routing_profiles[self.settings.selected_routing]
+                        .rules
+                        .iter()
+                        .any(|r| {
+                            r.enabled
+                                && r.action == eivro::policy::Action::Connection(connection.id)
+                        })
+                        && state(&links) != state(&self.network_links)
+                });
+                self.network_links = links;
+                if changed && self.network_initialized && self.want_connected {
+                    self.reconfigure();
+                }
+                self.network_initialized = true;
             }
         }
-        if let Some(links) = self
-            .network_result
-            .as_ref()
-            .and_then(|rx| rx.try_recv().ok())
+        // An in-flight worker already wakes the UI on completion. Never drop
+        // the coalesced deadline or spin frames while waiting for that worker.
+        if self.network_result.is_none()
+            && let Some(due) = self.network_due
         {
-            let changed = self.settings.connections.iter().any(|connection| {
-                let state = |links: &[eivro::network::Interface]| {
-                    let server = connection.servers(links)?.first().copied()?;
-                    let index = links.iter().find(|l| l.name == connection.interface)?.index;
-                    Some((index, server))
-                };
-                self.settings.routing_profiles[self.settings.selected_routing]
-                    .rules
-                    .iter()
-                    .any(|r| {
-                        r.enabled && r.action == eivro::policy::Action::Connection(connection.id)
-                    })
-                    && state(&links) != state(&self.network_links)
-            });
-            self.network_links = links;
-            self.network_result = None;
-            if changed && self.network_initialized && self.want_connected {
-                self.reconfigure();
+            let delay = due.saturating_duration_since(std::time::Instant::now());
+            if delay.is_zero() {
+                self.scan_network(ctx);
+            } else {
+                ctx.request_repaint_after(delay);
             }
-            self.network_initialized = true;
         }
     }
 }
@@ -475,6 +477,57 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn older_interface_snapshot_cannot_override_notifications_received_during_a_scan() {
+        let mut app = App::model(Settings::default(), None, None);
+        app.settings.connections.push(eivro::network::Connection {
+            id: 1,
+            name: "Test".into(),
+            interface: "test0".into(),
+            dns: eivro::network::Dns::Interface,
+            #[cfg(target_os = "linux")]
+            gateway: None,
+        });
+        #[cfg(target_os = "linux")]
+        {
+            app.network_monitor_failed = true;
+        }
+        let ctx = egui::Context::default();
+        app.network_initialized = true;
+        let link = |index| eivro::network::Interface {
+            name: "test0".into(),
+            index,
+            up: true,
+            dns: vec!["192.0.2.53".parse().unwrap()],
+        };
+        app.network_links = vec![link(1)];
+        let (tx, rx) = mpsc::channel();
+        app.network_result = Some(rx);
+        app.schedule_network_scan(&ctx);
+        let due = std::time::Instant::now();
+        app.network_due = Some(due);
+        app.poll_network(&ctx);
+        assert_eq!(
+            app.network_due,
+            Some(due),
+            "queued refresh lost while worker was busy"
+        );
+        // Keep the next scan pending without querying the host network.
+        app.network_due = Some(due + std::time::Duration::from_secs(10));
+        tx.send(vec![link(2)]).unwrap();
+        app.poll_network(&ctx);
+        assert_eq!(
+            app.network_links[0].index, 1,
+            "superseded result was published"
+        );
+        assert!(app.network_result.is_none() && app.network_due.is_some());
+        let (tx, rx) = mpsc::channel();
+        app.network_result = Some(rx);
+        app.network_due = None;
+        tx.send(vec![link(3)]).unwrap();
+        app.poll_network(&ctx);
+        assert_eq!(app.network_links[0].index, 3);
+    }
     #[test]
     #[cfg(target_os = "linux")]
     fn rejected_network_edit_preserves_settings_and_connection_intent() {

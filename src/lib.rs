@@ -5,7 +5,6 @@ pub mod connectivity;
 #[cfg_attr(target_os = "macos", path = "platform/macos/desktop.rs")]
 #[cfg_attr(windows, path = "platform/windows/desktop.rs")]
 pub mod desktop;
-#[cfg(target_os = "linux")]
 pub mod diagnostics;
 #[cfg(target_os = "linux")]
 pub mod domain_dns;
@@ -36,8 +35,9 @@ pub mod xray;
 pub type Result<T> = std::result::Result<T, String>;
 #[cfg(target_os = "linux")]
 pub const CORE_VERSION: &str = "1.14.4-eivro.2";
+pub const UPSTREAM_CORE_VERSION: &str = "1.14.4";
 #[cfg(not(target_os = "linux"))]
-pub const CORE_VERSION: &str = "1.14.4";
+pub const CORE_VERSION: &str = UPSTREAM_CORE_VERSION;
 pub const MAX_IMPORT: usize = 2 * 1024 * 1024;
 #[cfg_attr(target_os = "macos", path = "platform/macos/tun.rs")]
 #[cfg_attr(windows, path = "platform/windows/tun.rs")]

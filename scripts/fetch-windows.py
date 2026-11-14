@@ -24,7 +24,7 @@ def main():
     args = parser.parse_args()
     manifest = json.loads((ROOT / "scripts/windows-cores.json").read_text())
     for name, source in [("sing-box", "src/lib.rs"), ("xray", "src/xray.rs")]:
-        field = "CORE_VERSION" if name == "sing-box" else "VERSION"
+        field = "UPSTREAM_CORE_VERSION" if name == "sing-box" else "VERSION"
         match = re.search(rf'pub const {field}: &str = "([^"]+)"', (ROOT / source).read_text())
         if not match or match[1] != manifest[name]["version"]:
             raise SystemExit(f"Windows {name} pin differs from Rust")

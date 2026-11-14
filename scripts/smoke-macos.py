@@ -68,6 +68,13 @@ def main():
     assert subprocess.check_output([str(app / 'MacOS/eivro'), '--version'], text=True).strip() == f'Eivro {version}'
     port = free_port()
     request = {'uri': 'ss://chacha20-ietf-poly1305:synthetic@127.0.0.1:9', 'bypass': [], 'port': port}
+    # Exercise the same VLESS WS/TLS/Mux URI as the installed client. Local
+    # mode only validates/listens; loopback transport tests verify actual data.
+    mux_request = dict(request, uri='vless://a3ba7b44-3275-42e7-9a54-30aa2bde0437@127.0.0.1:9'
+        '?security=tls&type=ws&sni=ci.invalid&path=%2Fstream&mux=true&muxConcurrency=8',
+        bridge_port=free_port())
+    while mux_request['bridge_port'] == port:
+        mux_request['bridge_port'] = free_port()
     with connect(version) as sock:
         send(sock, {'command': 'interfaces'})
         interfaces = receive(sock)
@@ -78,7 +85,7 @@ def main():
             assert receive(sock)['event'] == 'denied'
         for cycle in range(2):
             print(f'Local cycle {cycle + 1}: start', flush=True)
-            send(sock, {'command': 'start', 'request': request, 'mode': 'local', 'authorization': None})
+            send(sock, {'command': 'start', 'request': (request, mux_request)[cycle], 'mode': 'local', 'authorization': None})
             reply = receive(sock)
             assert reply['event'] == 'ready', reply
             print(f'Local cycle {cycle + 1}: ready', flush=True)
@@ -88,13 +95,21 @@ def main():
             send(sock, {'command': 'stop'})
             assert receive(sock)['event'] == 'stopped'
             wait_closed(port)
+            if cycle == 1:
+                wait_closed(mux_request['bridge_port'])
         send(sock, {'command': 'start', 'request': request, 'mode': 'local', 'authorization': None})
         assert receive(sock)['event'] == 'ready'
     wait_closed(port)
     # Exercise the actual installed CGL/AppKit application with empty, private
     # settings. No VPN is started and no user configuration is read.
+    # A schema-5 Mac installation must remain launchable after an upgrade.
     for background in (False, True):
         with tempfile.TemporaryDirectory(prefix='eivro-macos-smoke-') as config:
+            settings = Path(config) / 'eivro' / 'settings.json'
+            settings.parent.mkdir(mode=0o700)
+            previous = {'schema': 5, 'autoconnect': False}
+            settings.write_text(json.dumps(previous))
+            settings.chmod(0o600)
             environment = dict(os.environ, XDG_CONFIG_HOME=config)
             gui = subprocess.Popen([str(app / 'MacOS/eivro')] + (['--background'] if background else []), env=environment,
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

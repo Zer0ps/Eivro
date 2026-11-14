@@ -19,7 +19,7 @@ pub fn interfaces() -> Vec<Interface> {
     }
     links
 }
-fn raw_interfaces() -> Vec<Interface> {
+pub(crate) fn raw_interfaces() -> Vec<Interface> {
     let Ok(value) = native::interfaces() else {
         return Vec::new();
     };

@@ -323,6 +323,7 @@ impl App {
         self.diagnostics.notice = None;
         self.diagnostics.progress = "Проверяем актуальность сети…".into();
         let wake = ctx.clone();
+        #[cfg(target_os = "linux")]
         let tun = self.tun.clone();
         std::thread::spawn(move || {
             let message = if matches!(action, Action::Reconnect) {
@@ -337,6 +338,7 @@ impl App {
                 });
                 Message::ReconnectReady(result)
             } else {
+                #[cfg(target_os = "linux")]
                 let prepared = if matches!(action, Action::RestoreDns { .. }) {
                     engine::fingerprint_cancelled(cancel.clone()).and_then(|current| {
                         if cancel.load(Ordering::Relaxed) {
@@ -355,15 +357,22 @@ impl App {
                 } else {
                     Ok(())
                 };
-                Message::Repaired(prepared.and_then(|()| {
-                    if cancel.load(Ordering::Relaxed) {
-                        Err("Действие отменено.".into())
-                    } else {
-                        let _ = tx.try_send(Message::Progress("Применяем исправление…".into()));
-                        wake.request_repaint();
-                        engine::repair::apply(&action, &fingerprint, cancel)
-                    }
-                }))
+                #[cfg(target_os = "linux")]
+                {
+                    Message::Repaired(prepared.and_then(|()| {
+                        if cancel.load(Ordering::Relaxed) {
+                            Err("Действие отменено.".into())
+                        } else {
+                            let _ = tx.try_send(Message::Progress("Применяем исправление…".into()));
+                            wake.request_repaint();
+                            engine::repair::apply(&action, &fingerprint, cancel)
+                        }
+                    }))
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    Message::Repaired(Err("Недоступное действие диагностики.".into()))
+                }
             };
             let _ = tx.send(message);
             wake.request_repaint();

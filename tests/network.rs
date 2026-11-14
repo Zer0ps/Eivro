@@ -36,6 +36,33 @@ fn request() -> ConnectRequest {
 }
 
 #[test]
+fn manual_cidr_rule_resolves_hostnames_before_routing_without_a_preset() {
+    let mut req = request();
+    req.policies = vec![PolicyRule {
+        enabled: true,
+        target: Target::address("192.0.2.0/24").unwrap(),
+        action: Action::Direct,
+    }];
+    let config = config::generate(&req, Mode::Local).unwrap();
+    let rules = config["route"]["rules"].as_array().unwrap();
+    let resolve = rules.iter().position(|r| r["action"] == "resolve").unwrap();
+    let cidr = rules
+        .iter()
+        .position(|r| r.get("ip_cidr").is_some() && r["action"] == "route")
+        .unwrap();
+    assert!(resolve < cidr);
+    req.policies[0].enabled = false;
+    let config = config::generate(&req, Mode::Local).unwrap();
+    assert!(
+        !config["route"]["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["action"] == "resolve")
+    );
+}
+
+#[test]
 #[cfg(target_os = "linux")]
 fn gateway_migration_has_a_private_rollback_and_rejects_kill_switch_bypass() {
     use std::{fs, os::unix::fs::PermissionsExt};

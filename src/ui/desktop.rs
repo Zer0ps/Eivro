@@ -40,7 +40,6 @@ impl App {
                     }
                 }
                 DesktopEvent::Network(online) => {
-                    #[cfg(target_os = "linux")]
                     self.diagnostics.invalidate();
                     #[cfg(any(target_os = "macos", windows))]
                     self.schedule_network_scan(ctx);
@@ -52,7 +51,6 @@ impl App {
                     }
                 }
                 DesktopEvent::Sleep(sleeping) => {
-                    #[cfg(target_os = "linux")]
                     self.diagnostics.invalidate();
                     self.recovery.sleeping = sleeping;
                     if self.want_connected && self.settings.reconnect {
@@ -64,7 +62,7 @@ impl App {
             }
         }
     }
-    fn show_window(&mut self, ctx: &egui::Context) {
+    pub(super) fn show_window(&mut self, ctx: &egui::Context) {
         self.hidden = false;
         self.background_start = false;
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
@@ -72,9 +70,8 @@ impl App {
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
     }
     fn network_reconnect(&mut self) {
-        // Login emits several network notifications while polkit is still open.
-        // Let the initial attempt finish; restarting it would reopen the dialog.
-        #[cfg(target_os = "linux")]
+        // Network changes during authorization or session setup can be generated
+        // by that setup itself. Let its first attempt finish before reconnecting.
         if self.session.is_some() && !self.running && !self.stopping {
             return;
         }
@@ -102,9 +99,18 @@ impl App {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests {
     use super::*;
+    #[test]
+    fn tray_toggle_with_no_server_opens_the_picker_without_starting_a_session() {
+        let mut app = App::model(Settings::default(), None, None);
+        app.hidden = true;
+        app.connect(&egui::Context::default());
+        assert!(app.catalog_open && !app.hidden);
+        assert!(!app.want_connected && app.session.is_none());
+    }
+
     #[test]
     fn cancelled_autoconnect_stays_idle_after_network_and_wake_events() {
         let ctx = egui::Context::default();

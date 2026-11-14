@@ -31,16 +31,7 @@ pub fn canonical(host: &str) -> Result<String> {
     })
 }
 
-pub(crate) fn synthetic(ip: IpAddr) -> bool {
-    if let IpAddr::V6(ip) = ip
-        && let Some(mapped) = ip.to_ipv4_mapped()
-    {
-        return synthetic(IpAddr::V4(mapped));
-    }
-    [super::IPV4_RANGE, "2001:2::/48"]
-        .iter()
-        .any(|range| range.parse::<ipnet::IpNet>().unwrap().contains(&ip))
-}
+pub(crate) use crate::diagnostics::synthetic;
 
 fn real_address(ip: IpAddr) -> bool {
     !synthetic(ip)
@@ -265,7 +256,7 @@ mod tests {
             }))
             .unwrap();
             let mut config = crate::config::generate(&request, crate::config::Mode::Tun).unwrap();
-            super::super::configure(&mut config, &request).unwrap();
+            super::super::configure(&mut config).unwrap();
             apply(
                 &mut config,
                 &BTreeMap::from([(

@@ -21,10 +21,7 @@ pub(super) struct Context {
     pub cancel: Arc<AtomicBool>,
     pub deadline: Instant,
 }
-pub(super) struct Output {
-    pub code: Option<i32>,
-    pub text: String,
-}
+use super::https::Output;
 impl Context {
     fn new(cancel: Arc<AtomicBool>) -> Self {
         Self {

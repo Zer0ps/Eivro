@@ -6,10 +6,15 @@ use std::sync::{Arc, atomic::AtomicBool};
 mod analysis;
 #[cfg(target_os = "linux")]
 mod environment;
+mod https;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
 mod probe;
+#[cfg(target_os = "linux")]
+pub(crate) use https::synthetic;
+#[cfg(not(target_os = "linux"))]
+mod portable;
 #[cfg(target_os = "linux")]
 pub mod repair;
 
@@ -141,17 +146,7 @@ pub fn run(request: Request, cancel: Arc<AtomicBool>, progress: impl Fn(&str)) -
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (request, cancel, progress);
-        let mut report = Report::default();
-        report.add(
-            "scope",
-            Status::Unknown,
-            "Диагностика Linux",
-            "Глубокая диагностика пока доступна только в Linux.",
-            "Используйте штатные средства диагностики системы.",
-            None,
-        );
-        report
+        portable::run(request, cancel, progress)
     }
 }
 

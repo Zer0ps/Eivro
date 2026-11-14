@@ -241,10 +241,10 @@ pub fn generate_with_network(
             rule["invert"] = json!(true);
         }
     }
-    if req
-        .ru_preset
-        .as_ref()
-        .is_some_and(|preset| preset.has_networks())
+    let has_cidr = |address: &str| matches!(Rule::parse(address), Ok(Rule::Network(_)));
+    if req.ru_preset.as_ref().is_some_and(|preset| preset.has_networks())
+        || req.bypass.iter().any(|address| has_cidr(address))
+        || req.policies.iter().any(|rule| rule.enabled && matches!(&rule.target, crate::policy::Target::Address(address) if has_cidr(address)))
     {
         let prefix = resolution_rules(&config, req, mode)?;
         let routes = config["route"]["rules"].as_array_mut().unwrap();

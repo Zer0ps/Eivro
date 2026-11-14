@@ -136,7 +136,7 @@ fn both_tiers_and_nested_exclusions_pass_the_real_core_parser() {
             let cfg = {
                 let mut cfg = cfg;
                 if mode == Mode::Tun {
-                    eivro::domain_dns::configure(&mut cfg, &req).unwrap();
+                    eivro::domain_dns::configure(&mut cfg).unwrap();
                 }
                 cfg
             };

@@ -121,7 +121,8 @@ jobs:
           cargo fmt --all --check
           cargo clippy --locked --lib --bins -- -D warnings
           cargo test --locked --lib --bin eivro
-          cargo test --locked --test catalog --test policy --test subscriptions --test subscription_compat --test resolver
+          # The loopback TLS fixture uses OpenSSL 3 to generate a one-use SAN certificate.
+          PATH="$(brew --prefix openssl@3)/bin:$PATH" cargo test --locked --test catalog --test policy --test subscriptions --test subscription_compat --test resilient_import --test xray_transport --test resolver
       - name: Build application and installer
         run: ./scripts/build-macos.sh
       - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5

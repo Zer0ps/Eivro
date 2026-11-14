@@ -104,7 +104,7 @@ impl App {
                         }
                         if self.commit(next) {
                             self.delete_server = false;
-                            self.reconfigure();
+                            self.apply_saved_connection();
                         }
                     }
                 });
@@ -143,7 +143,7 @@ impl App {
                         self.refresh_errors.remove(&id);
                         self.delete_subscription = None;
                         if selected == Some(id) {
-                            self.reconfigure();
+                            self.apply_saved_connection();
                         }
                     }
                 }

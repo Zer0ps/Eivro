@@ -100,6 +100,7 @@ if __name__ == '__main__':
             root = Path(folder)
             for name in ['config', 'runtime', 'cache']:
                 (root/name).mkdir(mode=0o700)
-            env = {**os.environ, 'XDG_CONFIG_HOME': str(root/'config'), 'XDG_RUNTIME_DIR': str(root/'runtime'), 'XDG_CACHE_HOME': str(root/'cache'), 'GSETTINGS_BACKEND': 'dconf'}
+            # GIO otherwise activates gvfsd-fuse inside our temporary runtime directory.
+            env = {**os.environ, 'GIO_USE_VFS': 'local', 'XDG_CONFIG_HOME': str(root/'config'), 'XDG_RUNTIME_DIR': str(root/'runtime'), 'XDG_CACHE_HOME': str(root/'cache'), 'GSETTINGS_BACKEND': 'dconf'}
             result = subprocess.run(['dbus-run-session', '--', sys.executable, '-u', __file__, '--inside', binary], env=env)
             raise SystemExit(result.returncode)

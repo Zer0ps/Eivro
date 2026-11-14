@@ -19,6 +19,10 @@ impl Grant {
             .stdout(Stdio::piped())
             .spawn()
             .map_err(|_| "Не удалось запросить права macOS.")?;
+        Self::read_authorization(child, watch)
+    }
+
+    fn read_authorization(child: Child, watch: &UnixStream) -> Result<Option<Self>> {
         let mut grant = Self {
             child,
             token: [0; 32],
@@ -29,8 +33,11 @@ impl Grant {
         }
         let pid = process::pid_fd(&grant.child)?;
         let deadline = Instant::now() + Duration::from_secs(180);
+        // An explicit decision byte distinguishes Cancel from a damaged worker
+        // pipe. Read stdout before process exit when both become ready together.
+        let mut response = [0u8; 33];
         let mut offset = 0;
-        while offset < 32 {
+        while offset < response.len() {
             let mut fds = [
                 process::pollfd(watch.as_raw_fd(), libc::POLLIN),
                 process::pollfd(output.as_raw_fd(), libc::POLLIN),
@@ -56,18 +63,27 @@ impl Grant {
             if fds[0].revents != 0 {
                 return Ok(None);
             }
-            if fds[2].revents != 0 {
-                return Err("Доступ TUN отменён или права macOS не предоставлены.".into());
-            }
             if fds[1].revents != 0 {
-                match output.read(&mut grant.token[offset..]) {
-                    Ok(0) => return Err("Доступ TUN отменён.".into()),
-                    Ok(n) => offset += n,
+                match output.read(&mut response[offset..]) {
+                    Ok(0) => return Err(crate::tun::AUTHORIZATION_FAILED.into()),
+                    Ok(n) => {
+                        offset += n;
+                        match response[0] {
+                            b'C' => return Err(crate::tun::AUTHORIZATION_DENIED.into()),
+                            b'G' => {}
+                            _ => return Err(crate::tun::AUTHORIZATION_FAILED.into()),
+                        }
+                    }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                     Err(_) => return Err("Ошибка авторизации macOS.".into()),
                 }
             }
+            if fds[2].revents != 0 {
+                return Err(crate::tun::AUTHORIZATION_FAILED.into());
+            }
         }
+        grant.token.copy_from_slice(&response[1..]);
+        response.fill(0);
         Ok(Some(grant))
     }
     pub fn token(&self) -> [u8; 32] {
@@ -91,14 +107,54 @@ pub fn worker() -> Result<()> {
         }
     }
     crate::privacy::harden().map_err(|_| "Не удалось защитить процесс авторизации.")?;
-    let authorization = super::native::Authorization::acquire()?;
-    std::io::stdout()
-        .write_all(&authorization.token())
+    let mut output = std::io::stdout().lock();
+    let Some(authorization) = super::native::Authorization::acquire()? else {
+        return output
+            .write_all(b"C")
+            .and_then(|_| output.flush())
+            .map_err(|_| "Канал авторизации закрыт.".into());
+    };
+    output
+        .write_all(b"G")
+        .and_then(|_| output.write_all(&authorization.token()))
         .map_err(|_| "Канал авторизации закрыт.")?;
-    std::io::stdout()
-        .flush()
-        .map_err(|_| "Канал авторизации закрыт.")?;
+    output.flush().map_err(|_| "Канал авторизации закрыт.")?;
     let mut byte = [0];
     let _ = std::io::stdin().read(&mut byte);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancel_frame_survives_immediate_worker_exit_and_crashes_are_not_reported_as_user_cancel() {
+        let (_cancel, watch) = UnixStream::pair().unwrap();
+        for (script, expected) in [
+            ("printf C", crate::tun::AUTHORIZATION_DENIED),
+            ("exit 1", crate::tun::AUTHORIZATION_FAILED),
+            ("printf Gshort", crate::tun::AUTHORIZATION_FAILED),
+        ] {
+            let child = std::process::Command::new("/bin/sh")
+                .args(["-c", script])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let result = Grant::read_authorization(child, &watch);
+            assert!(matches!(result, Err(ref e) if e == expected));
+        }
+        let child = std::process::Command::new("/bin/sh")
+            .args([
+                "-c",
+                "printf G; printf '01234567890123456789012345678901'; read line",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let grant = Grant::read_authorization(child, &watch).unwrap().unwrap();
+        assert_eq!(&grant.token(), b"01234567890123456789012345678901");
+    }
 }

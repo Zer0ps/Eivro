@@ -1,6 +1,6 @@
 //! Linux TUN domain identity. Real DNS responses belong to each core session;
 //! FakeIP identities must outlive a transport reconnect.
-use crate::{Result, config::ConnectRequest, policy::Target, routing::Rule};
+use crate::Result;
 use serde_json::{Value, json};
 
 pub mod gateways;
@@ -71,7 +71,7 @@ fn range_conflict(route: &Value) -> bool {
     })
 }
 
-pub fn configure(config: &mut Value, request: &ConnectRequest) -> Result<()> {
+pub fn configure(config: &mut Value) -> Result<()> {
     config["dns"]["servers"]
         .as_array_mut()
         .ok_or("Нет DNS-конфигурации.")?
@@ -95,22 +95,6 @@ pub fn configure(config: &mut Value, request: &ConnectRequest) -> Result<()> {
     // Unknown synthetic addresses must never escape to a VPN server. Known
     // FakeIPs have already become domain destinations before rule evaluation.
     prefix.push(json!({"ip_cidr":[IPV4_RANGE,"2001:2::/48"],"action":"reject"}));
-    let needs_resolution = request.policies.iter().filter(|rule| rule.enabled).any(|rule| {
-        matches!(&rule.target, Target::Address(address) if matches!(Rule::parse(address), Ok(Rule::Network(_))))
-    }) || request.bypass.iter().any(|address| matches!(Rule::parse(address), Ok(Rule::Network(_))))
-        || request.ru_preset.as_ref().is_some_and(|preset| preset.has_networks());
-    if needs_resolution
-        && !request
-            .ru_preset
-            .as_ref()
-            .is_some_and(|preset| preset.has_networks())
-    {
-        prefix.extend(crate::config::resolution_rules(
-            config,
-            request,
-            crate::config::Mode::Tun,
-        )?);
-    }
     let routes = config["route"]["rules"]
         .as_array_mut()
         .ok_or("Нет маршрутов.")?;

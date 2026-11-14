@@ -96,7 +96,7 @@ fn main() {
     let cfg = {
         let mut cfg = cfg;
         if tun {
-            eivro::domain_dns::configure(&mut cfg, &req).unwrap();
+            eivro::domain_dns::configure(&mut cfg).unwrap();
         }
         cfg
     };
