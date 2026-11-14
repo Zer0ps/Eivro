@@ -130,6 +130,8 @@ fn assert_http(proxy: u16) {
                 Err(e) => panic!("Fixture HTTP failed: {e}"),
             }
         };
+        // Winsock inherits FIONBIO from the listening socket on accept.
+        socket.set_nonblocking(false).unwrap();
         socket
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
@@ -186,6 +188,122 @@ fn both_engines_transfer_traffic_and_close_without_orphans() {
         let (session, rx) = connected(request, Mode::Local);
         assert_http(port);
         stopped(session, rx, port);
+    }
+}
+
+#[test]
+fn websocket_mux_transfers_concurrent_streams_with_verified_tls() {
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/windows-test-tls.ps1");
+    let generated = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+        ])
+        .arg(source)
+        .output()
+        .unwrap();
+    assert!(
+        generated.status.success(),
+        "Could not generate disposable loopback TLS fixture"
+    );
+    let fixture: serde_json::Value = serde_json::from_slice(&generated.stdout).unwrap();
+    let target = TcpListener::bind("127.0.0.1:0").unwrap();
+    let target_port = target.local_addr().unwrap().port();
+    let server_port = port();
+    let proxy_port = port();
+    let job = Job::new().unwrap();
+    let spawn = |config: serde_json::Value, listening| {
+        let core = CoreChild::spawn(
+            &process::xray_path().unwrap(),
+            &["run", "-config", "stdin:"],
+            config.to_string().as_bytes(),
+            &job,
+        )
+        .unwrap();
+        let due = Instant::now() + Duration::from_secs(8);
+        while TcpStream::connect(("127.0.0.1", listening)).is_err() {
+            assert!(
+                !core.exited().unwrap() && Instant::now() < due,
+                "Xray listener failed"
+            );
+            std::thread::sleep(Duration::from_millis(15));
+        }
+        core
+    };
+    const ID: &str = "a3ba7b44-3275-42e7-9a54-30aa2bde0437";
+    let _server = spawn(
+        json!({
+            "log":{"loglevel":"none"},"inbounds":[{"listen":"127.0.0.1","port":server_port,"protocol":"vless",
+            "settings":{"clients":[{"id":ID}],"decryption":"none"},"streamSettings":{"network":"ws","security":"tls",
+            "wsSettings":{"path":"/edge","host":"mux.eivro.test"},"tlsSettings":{"alpn":["http/1.1"],"certificates":[fixture]}}}],
+            "outbounds":[{"protocol":"freedom","settings":{"finalRules":[{"action":"allow","network":"tcp","ip":["127.0.0.1/32"],"port":target_port}]}}]
+        }),
+        server_port,
+    );
+    let link = format!(
+        "vless://{ID}@127.0.0.1:{server_port}?security=tls&type=ws&sni=mux.eivro.test&host=mux.eivro.test&path=%2Fedge&alpn=http%2F1.1&fp=chrome&mux=true&muxConcurrency=8"
+    );
+    let mut outbound = eivro::import::parse_uri(&link).unwrap().outbound;
+    outbound["streamSettings"]["tlsSettings"]["certificates"] =
+        json!([{"usage":"verify","certificate":fixture["certificate"]}]);
+    let _client = spawn(eivro::xray::config(outbound, proxy_port), proxy_port);
+    let fetch = || {
+        Command::new("curl.exe")
+            .args([
+                "-q",
+                "--silent",
+                "--fail",
+                "--max-time",
+                "8",
+                "--noproxy",
+                "",
+                "--socks5-hostname",
+                &format!("127.0.0.1:{proxy_port}"),
+                &format!("http://127.0.0.1:{target_port}/"),
+            ])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap()
+    };
+    let requests = [fetch(), fetch()];
+    target.set_nonblocking(true).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(8);
+    for _ in &requests {
+        let mut socket = loop {
+            match target.accept() {
+                Ok((stream, _)) => break stream,
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(10))
+                }
+                Err(e) => panic!("Loopback Mux did not deliver request: {e}"),
+            }
+        };
+        socket.set_nonblocking(false).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut headers = Vec::new();
+        while !headers.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            socket.read_exact(&mut byte).unwrap();
+            headers.push(byte[0]);
+            assert!(headers.len() < 4096);
+        }
+        assert!(headers.starts_with(b"GET / HTTP/1.1\r\n"));
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            .unwrap();
+    }
+    for request in requests {
+        let response = request.wait_with_output().unwrap();
+        assert!(response.status.success());
+        assert_eq!(response.stdout, b"ok");
     }
 }
 
@@ -540,6 +658,7 @@ impl PrivateSite {
         let http_worker = std::thread::spawn(move || {
             while !stopped.load(Ordering::Acquire) {
                 if let Ok((mut socket, _)) = web.accept() {
+                    socket.set_nonblocking(false).unwrap();
                     socket
                         .set_read_timeout(Some(Duration::from_millis(500)))
                         .unwrap();

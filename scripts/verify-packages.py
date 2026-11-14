@@ -102,7 +102,10 @@ assert 'velum < 1.2.0' in run(['rpm', '-qp', '--obsoletes', rpm]).decode().split
 assert f'velum = {PKGVERSION}' in run(['rpm', '-qp', '--provides', rpm]).decode().splitlines()
 checks['rename_upgrade'] = 'PASS: RPM Obsoletes/Provides, DEB Breaks/Replaces/Provides, legacy CLI wrappers; no old privileged helper/policy'
 assert 'nftables' in run(['rpm', '-qp', '--requires', rpm]).decode().splitlines()
-checks['rpm_digests'] = run(['rpm', '--checksig', rpm]).decode().strip().split(': ', 1)[1]
+# These are unsigned developer builds. Check header and payload integrity
+# explicitly; rpm 6.1's default policy separately requires an OpenPGP signature.
+run(['rpmkeys', '--define', '_pkgverify_level digest', '--checksig', rpm])
+checks['rpm_digests'] = 'Header and payload digests verified'
 checks['rpm'] = 'PASS: version, SHA256, root/0755, nftables dependency, font license; unsigned local package'
 
 appimage = DIST / f'Eivro-{VERSION}-x86_64.AppImage'

@@ -16,10 +16,27 @@ $directory = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'Eivro'
 if (Get-Service EivroTunnel -ErrorAction SilentlyContinue) { throw 'A pre-existing Eivro installation must not be replaced by this smoke test.' }
 $before = Get-NetIPInterface | Select-Object InterfaceIndex,AddressFamily,WeakHostSend
 $installed = $false
+$setupLog = Join-Path ([IO.Path]::GetTempPath()) ("eivro-setup-smoke-" + [Guid]::NewGuid().ToString("N") + ".log")
 try {
-    $setup = Start-Process -FilePath $installer -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+    $setup = Start-Process -FilePath $installer -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',('/LOG="' + $setupLog + '"') -Wait -PassThru
     $installed = Test-Path "$directory\unins000.exe"
-    if ($setup.ExitCode -ne 0) { throw 'Installer failed.' }
+    if ($setup.ExitCode -ne 0) {
+        # Keep temporary installer details in the disposable runner. Surface
+        # only application-owned phase markers and numeric process/OS errors.
+        $evidence = @()
+        if (Test-Path -LiteralPath $setupLog) {
+            foreach ($line in (Get-Content -LiteralPath $setupLog -Tail 250)) {
+                if ($line -match 'Eivro setup: (prepare|permissions|service|ready)(, exit -?\d+)?') {
+                    $evidence += $Matches[0]
+                } elseif ($line -match '(?i)(?:Process exit code|System error|Exit code):?\s+(-?\d+)') {
+                    $evidence += "process/OS code $($Matches[1])"
+                }
+            }
+        }
+        $svc = Get-Service EivroTunnel -ErrorAction SilentlyContinue
+        $serviceState = if ($svc) { $svc.Status } else { 'absent' }
+        throw "Installer exit $($setup.ExitCode), EivroTunnel $serviceState. $($evidence -join ' / ')"
+    }
     if ((Get-Service EivroTunnel).Status -ne 'Running') { throw 'Tunnel service is not running.' }
     $owner = (Get-Acl "$directory\eivro-tun.exe").GetOwner([Security.Principal.SecurityIdentifier]).Value
     if ($owner -ne 'S-1-5-32-544') { throw 'Unexpected helper ownership.' }
@@ -42,6 +59,7 @@ try {
         if ($current -and $current.WeakHostSend -ne $row.WeakHostSend) { throw 'An existing adapter was not restored.' }
     }
 } finally {
+    Remove-Item -LiteralPath $setupLog -ErrorAction SilentlyContinue
     Remove-Item Env:EIVRO_WINDOWS_LAB -ErrorAction SilentlyContinue
     if ($installed) {
         $uninstaller = Start-Process -FilePath "$directory\unins000.exe" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru

@@ -79,6 +79,7 @@ var
   Attributes: LongWord;
 begin
   Result := '';
+  Log('Eivro setup: prepare');
   Attributes := GetFileAttributesW(ExpandConstant('{app}'));
   if (Attributes <> $FFFFFFFF) and ((Attributes and $400) <> 0) then begin
     Result := 'Eivro installation directory cannot be a link.';
@@ -86,8 +87,10 @@ begin
   end;
   ExtractTemporaryFile('eivro-tun.exe');
   if not Exec(ExpandConstant('{tmp}\eivro-tun.exe'), '--stop', '', SW_HIDE, ewWaitUntilTerminated, Code) or (Code <> 0) then
-    Result := 'Eivro could not restore and stop the existing tunnel. Close Eivro and retry.'
-  else
+  begin
+    Log(Format('Eivro setup: prepare, exit %d', [Code]));
+    Result := 'Eivro could not restore and stop the existing tunnel. Close Eivro and retry.';
+  end else
     ServiceStopped := True;
 end;
 
@@ -103,13 +106,22 @@ procedure CurStepChanged(CurStep: TSetupStep);
 var Code: Integer;
 begin
   if CurStep = ssPostInstall then begin
+    Log('Eivro setup: permissions');
     ExtractTemporaryFile('secure-install.ps1');
     if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
       '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + ExpandConstant('{tmp}\secure-install.ps1') + '"',
       '', SW_HIDE, ewWaitUntilTerminated, Code) or (Code <> 0) then
+    begin
+      Log(Format('Eivro setup: permissions, exit %d', [Code]));
       RaiseException('Eivro could not protect the installation directory.');
+    end;
+    Log('Eivro setup: service');
     if not Exec(ExpandConstant('{app}\eivro-tun.exe'), '--install', '', SW_HIDE, ewWaitUntilTerminated, Code) or (Code <> 0) then
+    begin
+      Log(Format('Eivro setup: service, exit %d', [Code]));
       RaiseException('Eivro tunnel service did not start. Installation is incomplete.');
+    end;
+    Log('Eivro setup: ready');
     ServiceReady := True;
   end;
 end;

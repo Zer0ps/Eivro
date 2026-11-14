@@ -5,29 +5,39 @@ impl App {
     pub(super) fn settings_page(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, p: Palette) {
         ui.label(heading("Настройки", 26.0));
         ui.add_space(18.0);
-        let mut next = self.settings.clone();
+        // Rendering this form needs only scalar controls; Settings also owns all
+        // user profiles, access keys and potentially large unavailable records.
+        let mut theme = self.settings.theme;
+        let mut colorway = self.settings.colorway;
+        let mut accent = self.settings.accent;
+        let mut reduced_motion = self.settings.reduced_motion;
+        let mut close_to_tray = self.settings.close_to_tray;
+        let mut autoconnect = self.settings.autoconnect;
+        let mut reconnect = self.settings.reconnect;
+        let mut kill_switch = self.settings.kill_switch;
+        let mut port = self.settings.port;
         let mut changed = false;
         egui::ScrollArea::vertical()
             .id_salt("settings-content")
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    for (theme, title) in [(Theme::Dark, "Тёмная"), (Theme::Light, "Светлая")]
+                    for (value, title) in [(Theme::Dark, "Тёмная"), (Theme::Light, "Светлая")]
                     {
-                        changed |= ui.selectable_value(&mut next.theme, theme, title).changed();
+                        changed |= ui.selectable_value(&mut theme, value, title).changed();
                     }
                 });
                 ui.add_space(18.0);
                 ui.horizontal_wrapped(|ui| {
                     use eivro::storage::Colorway;
-                    for (value, name, accent, base) in [
+                    for (value, name, swatch, base) in [
                         (Colorway::Graphite, "Графит", [194, 205, 223], [22, 24, 29]),
                         (Colorway::Sage, "Шалфей", [164, 202, 183], [22, 29, 27]),
                         (Colorway::Sand, "Песок", [228, 198, 158], [31, 28, 25]),
                         (Colorway::Ocean, "Океан", [145, 188, 242], [20, 27, 34]),
                         (Colorway::Plum, "Слива", [215, 172, 201], [30, 24, 32]),
                     ] {
-                        let color = Color32::from_rgb(accent[0], accent[1], accent[2]);
-                        let selected = next.colorway == value;
+                        let color = Color32::from_rgb(swatch[0], swatch[1], swatch[2]);
+                        let selected = colorway == value;
                         let response = ui.add_sized(
                             [110.0, 94.0],
                             egui::Button::new("")
@@ -89,9 +99,9 @@ impl App {
                             );
                         }
                         if response.clicked() {
-                            next.colorway = value;
-                            next.accent = accent;
-                            changed = true;
+                            changed |= colorway != value || accent != swatch;
+                            colorway = value;
+                            accent = swatch;
                         }
                     }
                 });
@@ -103,25 +113,24 @@ impl App {
                     ui.painter().circle_filled(
                         r.center(),
                         6.0,
-                        Color32::from_rgb(next.accent[0], next.accent[1], next.accent[2]),
+                        Color32::from_rgb(accent[0], accent[1], accent[2]),
                     );
                     egui::Popup::menu(&response)
                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                         .show(|ui| {
-                            let mut color =
-                                Color32::from_rgb(next.accent[0], next.accent[1], next.accent[2]);
+                            let mut color = Color32::from_rgb(accent[0], accent[1], accent[2]);
                             if egui::color_picker::color_picker_color32(
                                 ui,
                                 &mut color,
                                 egui::color_picker::Alpha::Opaque,
                             ) {
-                                next.accent = [color.r(), color.g(), color.b()];
+                                accent = [color.r(), color.g(), color.b()];
                                 changed = true;
                             }
                         });
                 });
                 changed |= ui
-                    .checkbox(&mut next.reduced_motion, "Уменьшить движение")
+                    .checkbox(&mut reduced_motion, "Уменьшить движение")
                     .changed();
                 ui.add_space(24.0);
                 section(ui, "Поведение", p);
@@ -131,11 +140,9 @@ impl App {
                     .corner_radius(12)
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
-                        changed |= switch_row(ui, "Закрывать в трей", &mut next.close_to_tray, p);
-                        changed |=
-                            switch_row(ui, "Подключаться при запуске", &mut next.autoconnect, p);
-                        changed |=
-                            switch_row(ui, "Восстанавливать соединение", &mut next.reconnect, p);
+                        changed |= switch_row(ui, "Закрывать в трей", &mut close_to_tray, p);
+                        changed |= switch_row(ui, "Подключаться при запуске", &mut autoconnect, p);
+                        changed |= switch_row(ui, "Восстанавливать соединение", &mut reconnect, p);
                         if switch_row(ui, "Запускать при входе в систему", &mut self.autostart, p)
                         {
                             let result = eivro::desktop::autostart_path().and_then(|path| {
@@ -159,15 +166,15 @@ impl App {
                 ui.add_space(18.0);
                 egui::CollapsingHeader::new("Дополнительно")
                     .id_salt("advanced-settings")
-                    .default_open(next.kill_switch)
+                    .default_open(kill_switch)
                     .show(ui, |ui| {
                         ui.add_enabled_ui(
-                            eivro::platform::KILL_SWITCH_SUPPORTED || next.kill_switch,
+                            eivro::platform::KILL_SWITCH_SUPPORTED || kill_switch,
                             |ui| {
                                 changed |= switch_row(
                                     ui,
                                     "Kill switch · экспериментально",
-                                    &mut next.kill_switch,
+                                    &mut kill_switch,
                                     p,
                                 );
                             },
@@ -179,7 +186,7 @@ impl App {
                                     .color(p.muted),
                             );
                         }
-                        if next.kill_switch {
+                        if kill_switch {
                             ui.label(
                                 RichText::new(
                                     "Блокирует трафик при обрыве. Несовместим с \
@@ -195,12 +202,12 @@ impl App {
                             ui.horizontal(|ui| {
                                 ui.label("Локальный порт");
                                 changed |= ui
-                                    .add(egui::DragValue::new(&mut next.port).range(1024..=65535))
+                                    .add(egui::DragValue::new(&mut port).range(1024..=65535))
                                     .changed();
                             });
                         });
                         ui.label(
-                            RichText::new(format!("HTTP / SOCKS5 · 127.0.0.1:{}", next.port))
+                            RichText::new(format!("HTTP / SOCKS5 · 127.0.0.1:{}", port))
                                 .small()
                                 .color(p.muted),
                         );
@@ -274,13 +281,23 @@ impl App {
                 }
             });
         if changed {
-            let reconnect = next.kill_switch != self.settings.kill_switch;
+            let restart_connection = kill_switch != self.settings.kill_switch;
+            let mut next = self.settings.clone();
+            next.theme = theme;
+            next.colorway = colorway;
+            next.accent = accent;
+            next.reduced_motion = reduced_motion;
+            next.close_to_tray = close_to_tray;
+            next.autoconnect = autoconnect;
+            next.reconnect = reconnect;
+            next.kill_switch = kill_switch;
+            next.port = port;
             if self.commit(next) {
                 if !self.settings.reconnect && self.recovery.recovering {
                     self.recovery.due = None;
                     self.recovery.exhausted = true;
                 }
-                if reconnect {
+                if restart_connection {
                     self.apply_saved_connection();
                 }
             }

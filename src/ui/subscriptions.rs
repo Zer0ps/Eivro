@@ -17,8 +17,7 @@ impl App {
             });
         });
         ui.add_space(22.0);
-        let mut next = self.settings.clone();
-        let mut changed = false;
+        let mut policy_changes = Vec::new();
         let mut choose = None;
         let mut refresh = None;
         let mut retry = None;
@@ -26,12 +25,12 @@ impl App {
         egui::ScrollArea::vertical()
             .id_salt("subscriptions-page")
             .show(ui, |ui| {
-                if next.subscriptions.is_empty() {
+                if self.settings.subscriptions.is_empty() {
                     ui.add_space(24.0);
                     ui.label(heading("Ваши серверы появятся здесь", 22.0));
                     ui.label(RichText::new("Добавьте подписку, ключ или файл.").color(p.muted));
                 }
-                for (index, sub) in next.subscriptions.iter_mut().enumerate() {
+                for (index, sub) in self.settings.subscriptions.iter().enumerate() {
                     egui::Frame::new()
                         .fill(p.card)
                         .corner_radius(12)
@@ -124,7 +123,7 @@ impl App {
                                         .small()
                                         .color(p.muted),
                                 );
-                                if next.selected_subscription == index {
+                                if self.settings.selected_subscription == index {
                                     ui.label(RichText::new("Выбрана").small().color(p.accent));
                                 }
                                 if let Some(at) = sub.metadata.expires {
@@ -179,44 +178,35 @@ impl App {
                                             egui::PopupCloseBehavior::CloseOnClickOutside,
                                         )
                                         .show(|ui| {
-                                            changed |= ui
-                                                .selectable_value(
-                                                    &mut sub.update,
-                                                    UpdatePolicy::Manual,
-                                                    "Вручную",
-                                                )
-                                                .changed();
-                                            changed |= ui
-                                                .selectable_value(
-                                                    &mut sub.update,
-                                                    UpdatePolicy::Provider,
-                                                    "Интервал провайдера",
-                                                )
-                                                .changed();
+                                            let mut policy = sub.update;
+                                            ui.selectable_value(
+                                                &mut policy,
+                                                UpdatePolicy::Manual,
+                                                "Вручную",
+                                            );
+                                            ui.selectable_value(
+                                                &mut policy,
+                                                UpdatePolicy::Provider,
+                                                "Интервал провайдера",
+                                            );
                                             if ui
                                                 .selectable_label(
-                                                    matches!(
-                                                        sub.update,
-                                                        UpdatePolicy::EveryHours(_)
-                                                    ),
+                                                    matches!(policy, UpdatePolicy::EveryHours(_)),
                                                     "Свой интервал",
                                                 )
                                                 .clicked()
+                                                && !matches!(policy, UpdatePolicy::EveryHours(_))
                                             {
-                                                sub.update = UpdatePolicy::EveryHours(1);
-                                                changed = true;
+                                                policy = UpdatePolicy::EveryHours(1);
                                             }
-                                            if let UpdatePolicy::EveryHours(ref mut h) = sub.update
-                                            {
-                                                changed |= ui
-                                                    .add(
-                                                        egui::DragValue::new(h)
-                                                            .range(1..=720)
-                                                            .suffix(" ч"),
-                                                    )
-                                                    .changed();
+                                            if let UpdatePolicy::EveryHours(ref mut h) = policy {
+                                                ui.add(
+                                                    egui::DragValue::new(h)
+                                                        .range(1..=720)
+                                                        .suffix(" ч"),
+                                                );
                                             }
-                                            if sub.update == UpdatePolicy::Provider
+                                            if policy == UpdatePolicy::Provider
                                                 && sub.metadata.interval_hours.is_none()
                                             {
                                                 ui.label(
@@ -224,6 +214,9 @@ impl App {
                                                         .small()
                                                         .color(p.muted),
                                                 );
+                                            }
+                                            if policy != sub.update {
+                                                policy_changes.push((index, policy));
                                             }
                                         });
                                     if let Some(at) = sub.refreshed_at {
@@ -321,8 +314,14 @@ impl App {
                     ui.add_space(14.0);
                 }
             });
-        let focused = choose.and_then(|i| next.subscriptions.get(i)).map(|s| s.id);
-        if changed {
+        let focused = choose
+            .and_then(|i| self.settings.subscriptions.get(i))
+            .map(|s| s.id);
+        if !policy_changes.is_empty() {
+            let mut next = self.settings.clone();
+            for (i, policy) in policy_changes {
+                next.subscriptions[i].update = policy;
+            }
             self.commit(next);
         }
         if let Some(id) = focused {
