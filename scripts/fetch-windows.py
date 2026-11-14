@@ -22,10 +22,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
-    manifest = json.loads((ROOT / "scripts/windows-cores.json").read_text())
+    manifest = json.loads((ROOT / "scripts/windows-cores.json").read_text(encoding="utf-8"))
     for name, source in [("sing-box", "src/lib.rs"), ("xray", "src/xray.rs")]:
         field = "UPSTREAM_CORE_VERSION" if name == "sing-box" else "VERSION"
-        match = re.search(rf'pub const {field}: &str = "([^"]+)"', (ROOT / source).read_text())
+        match = re.search(rf'pub const {field}: &str = "([^"]+)"', (ROOT / source).read_text(encoding="utf-8"))
         if not match or match[1] != manifest[name]["version"]:
             raise SystemExit(f"Windows {name} pin differs from Rust")
     DEST.mkdir(parents=True, exist_ok=True)

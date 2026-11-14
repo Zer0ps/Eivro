@@ -631,14 +631,6 @@ impl App {
         if self.quitting || (self.stopping && !self.want_connected) {
             return;
         }
-        if !self.want_connected && self.settings.selected_profile().is_none() {
-            // The tray toggle is also available before a user imports a server.
-            // Bring them to the same picker the connection page offers.
-            self.show_window(ctx);
-            self.navigate(Page::Connection, ctx);
-            self.catalog_open = true;
-            return;
-        }
         self.diagnostics.invalidate_and_cancel();
         let wanted = self.want_connected;
         self.recovery.cancel();
@@ -657,6 +649,14 @@ impl App {
             }
         } else {
             if self.diagnostics_connection_blocked() {
+                return;
+            }
+            if self.settings.selected_profile().is_none() {
+                // The tray toggle is also available before a user imports a server.
+                // Bring them to the same picker the connection page offers.
+                self.show_window(ctx);
+                self.navigate(Page::Connection, ctx);
+                self.catalog_open = true;
                 return;
             }
             #[cfg(target_os = "linux")]

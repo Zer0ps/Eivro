@@ -6,7 +6,7 @@ import re
 import tomllib
 
 root = Path(__file__).resolve().parent.parent
-version = tomllib.loads((root / "Cargo.toml").read_text())["package"]["version"]
+version = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))["package"]["version"]
 if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
     raise SystemExit("Stable packages require a numeric Cargo version")
 ref = os.environ.get("GITHUB_REF", "")
