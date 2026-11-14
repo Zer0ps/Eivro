@@ -355,11 +355,57 @@ fn installed_tunnel_passes_https_and_restores_adapter() {
             .output()
             .unwrap();
         let passed = output.status.success() && output.stdout == b"200";
+        // UDP binding uses the ordinary system route, just like a user's app.
+        // A single lost datagram must not decide this availability check.
+        let destination = "198.51.100.7:32190"
+            .parse::<std::net::SocketAddr>()
+            .unwrap();
         let udp = UdpSocket::bind("0.0.0.0:0").unwrap();
-        udp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        udp.send_to(b"eivro-udp", "198.51.100.7:32190").unwrap();
+        udp.connect(destination).unwrap();
+        let source = udp.local_addr().unwrap().ip();
+        let baseline = echo.received.load(std::sync::atomic::Ordering::Relaxed);
+        let deadline = Instant::now() + Duration::from_secs(5);
         let mut packet = [0; 64];
-        let received = udp.recv_from(&mut packet);
+        let mut attempts = 0;
+        let mut last = None;
+        let mut echoed = false;
+        while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+            if remaining.is_zero() {
+                break;
+            }
+            udp.set_read_timeout(Some(remaining.min(Duration::from_secs(1))))
+                .unwrap();
+            attempts += 1;
+            if let Err(e) = udp.send(b"eivro-udp") {
+                last = e.raw_os_error();
+                break;
+            }
+            match udp.recv(&mut packet) {
+                Ok(n) if &packet[..n] == b"eivro-udp" => {
+                    echoed = true;
+                    break;
+                }
+                Ok(_) => break,
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) =>
+                {
+                    last = e.raw_os_error();
+                }
+                Err(e) => {
+                    last = e.raw_os_error();
+                    break;
+                }
+            }
+        }
+        let received_by_echo = echo.received.load(std::sync::atomic::Ordering::Relaxed) - baseline;
+        let best_route = if echoed {
+            None
+        } else {
+            udp_route_context(destination.ip())
+        };
         stopped(session, rx, port);
         assert!(
             passed,
@@ -367,13 +413,28 @@ fn installed_tunnel_passes_https_and_restores_adapter() {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-        assert_eq!(received.unwrap().0, 9, "UDP did not cross the tunnel");
-        assert_eq!(&packet[..9], b"eivro-udp");
+        assert!(
+            echoed && received_by_echo > 0,
+            "TUN UDP echo failed: xray={xray}, attempts={attempts}, received_by_echo={received_by_echo}, socket_error={last:?}, source={source}, best_route={best_route:?}"
+        );
     }
+}
+
+fn udp_route_context(destination: std::net::IpAddr) -> Option<String> {
+    let output = Command::new("powershell.exe").args(["-NoProfile","-NonInteractive","-Command",
+        &format!("Find-NetRoute -RemoteIPAddress '{destination}' -ErrorAction Stop | Select-Object InterfaceIndex,InterfaceAlias,AddressFamily,DestinationPrefix | ConvertTo-Json -Compress")
+    ]).output().ok()?;
+    output.status.success().then(|| {
+        String::from_utf8_lossy(&output.stdout)
+            .chars()
+            .take(500)
+            .collect()
+    })
 }
 
 struct UdpEcho {
     port: u16,
+    received: Arc<std::sync::atomic::AtomicUsize>,
     stop: Arc<std::sync::atomic::AtomicBool>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
@@ -386,16 +447,20 @@ impl UdpEcho {
             .unwrap();
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stopped = stop.clone();
+        let received = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = received.clone();
         let worker = std::thread::spawn(move || {
             let mut packet = [0; 512];
             while !stopped.load(std::sync::atomic::Ordering::Acquire) {
                 if let Ok((length, peer)) = socket.recv_from(&mut packet) {
+                    count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     socket.send_to(&packet[..length], peer).unwrap();
                 }
             }
         });
         Self {
             port,
+            received,
             stop,
             worker: Some(worker),
         }
