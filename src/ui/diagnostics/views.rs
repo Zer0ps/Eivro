@@ -123,8 +123,19 @@ impl App {
         ctx: &egui::Context,
         p: Palette,
     ) {
-        ui.label(heading("Диагностика", 26.0));
-        ui.label(RichText::new("Узнайте, что мешает подключению.").color(p.muted));
+        ui.horizontal_wrapped(|ui| {
+            ui.label(heading("Диагностика", 26.0));
+            let (rect, badge) = ui.allocate_exact_size(design::BETA_SIZE, egui::Sense::hover());
+            design::paint_beta(ui, rect, p);
+            badge.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::Label,
+                    true,
+                    design::DIAGNOSTICS_BETA_HINT,
+                )
+            });
+            badge.on_hover_text(design::DIAGNOSTICS_BETA_HINT);
+        });
         ui.add_space(22.0);
         egui::ScrollArea::vertical()
             .id_salt("diagnostics-page")
@@ -351,46 +362,75 @@ impl App {
         ui.label(heading("Информация", 26.0));
         ui.label(RichText::new(format!("Eivro {}", env!("CARGO_PKG_VERSION"))).color(p.muted));
         ui.add_space(22.0);
-        egui::ScrollArea::vertical().id_salt("information-page").show(ui, |ui| {
-            for (question, answer) in [
-                ("Как проверить соединение?", "Откройте «Диагностика» → «Доступ к сайту» и нажмите «Проверить». Можно указать сайт, который не открывается."),
-                ("Можно проверить сеть без интернета?", "Да. Режим «На устройстве» проверяет местные настройки DNS, маршруты и Eivro. Запросы к сайтам не отправляются."),
-                ("Приложение изменит мои настройки?", "Сама проверка ничего не меняет. Доступные действия выполняются только после отдельного подтверждения."),
-                ("Какие данные попадают в отчёт?", "Только версия Eivro, названия проверок и результаты. Адреса, ключи и ссылки подписок исключены. Перед копированием доступен просмотр."),
-            ] {
-                disclosure(ui, question, RichText::new(question).strong(), None, |ui| {
-                    ui.label(RichText::new(answer).color(p.muted));
-                });
-                ui.add_space(8.0);
-            }
-            ui.add_space(16.0);
-            ui.separator();
-            ui.add_space(16.0);
-            let open = std::mem::take(&mut self.diagnostics.show_technical).then_some(true);
-            disclosure(ui, "technical-evidence", heading("Технические сведения", 18.0), open, |ui| {
-                if let Some(report) = self.diagnostics.report.clone() {
-                    ui.label(RichText::new(if self.diagnostics.stale { "Сохранённый результат устарел. Повторите диагностику." } else if report.cancelled { "Проверка была отменена. Сведения неполные." } else { "Последняя проверка. Справочные пункты сами по себе не означают неисправность." }).small().color(p.muted));
-                    ui.add_space(10.0);
-                    if command(ui, "Просмотреть отчёт…", ButtonTone::Secondary, Vec2::ZERO, p).clicked() {
-                        let mut text = report.sanitized_text();
-                        if self.diagnostics.stale { text.push_str("Результат устарел.\n"); }
-                        self.diagnostics.export = Some(text);
-                    }
-                    ui.add_space(14.0);
-                    for (index, finding) in report.findings.iter().enumerate() {
-                        ui.label(RichText::new(status_label(finding.status)).small().color(status_color(finding.status, p)));
-                        self.diagnostic_row(ui, ctx, finding, index, p, true);
-                        ui.add_space(8.0);
-                    }
-                } else {
-                    ui.label(RichText::new("Здесь появится результат диагностики.").color(p.muted));
-                    ui.add_space(8.0);
-                    if command(ui, "Открыть диагностику", ButtonTone::Secondary, Vec2::ZERO, p).clicked() {
+        egui::ScrollArea::vertical()
+            .id_salt("information-page")
+            .show(ui, |ui| {
+                if self.diagnostics.report.is_none() {
+                    ui.label(RichText::new("Результатов проверки пока нет.").color(p.muted));
+                    ui.add_space(12.0);
+                    if command(
+                        ui,
+                        "Открыть диагностику",
+                        ButtonTone::Secondary,
+                        Vec2::ZERO,
+                        p,
+                    )
+                    .clicked()
+                    {
                         self.navigate(Page::Diagnostics, ctx);
                     }
+                    return;
                 }
+                if self.diagnostics.stale {
+                    ui.label(RichText::new("Сеть изменилась. Повторите проверку.").color(p.muted));
+                } else if self
+                    .diagnostics
+                    .report
+                    .as_ref()
+                    .is_some_and(|r| r.cancelled)
+                {
+                    ui.label(
+                        RichText::new("Проверка отменена. Результат частичный.").color(p.muted),
+                    );
+                }
+                if command(
+                    ui,
+                    "Просмотреть отчёт…",
+                    ButtonTone::Secondary,
+                    Vec2::ZERO,
+                    p,
+                )
+                .clicked()
+                    && let Some(report) = &self.diagnostics.report
+                {
+                    let mut text = report.sanitized_text();
+                    if self.diagnostics.stale {
+                        text.push_str("Результат устарел.\n");
+                    }
+                    self.diagnostics.export = Some(text);
+                }
+                ui.add_space(16.0);
+                let open = std::mem::take(&mut self.diagnostics.show_technical).then_some(true);
+                disclosure(
+                    ui,
+                    "technical-evidence",
+                    heading("Технические сведения", 18.0),
+                    open,
+                    |ui| {
+                        if let Some(report) = self.diagnostics.report.clone() {
+                            for (index, finding) in report.findings.iter().enumerate() {
+                                ui.label(
+                                    RichText::new(status_label(finding.status))
+                                        .small()
+                                        .color(status_color(finding.status, p)),
+                                );
+                                self.diagnostic_row(ui, ctx, finding, index, p, true);
+                                ui.add_space(8.0);
+                            }
+                        }
+                    },
+                );
             });
-        });
     }
 }
 

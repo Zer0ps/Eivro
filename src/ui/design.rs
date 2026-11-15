@@ -35,6 +35,21 @@ pub(super) fn accent_on(accent: Color32, background: Color32) -> Color32 {
         .find(|c| ratio(*c) >= 4.5)
         .unwrap_or(target)
 }
+
+pub(super) const BETA_SIZE: Vec2 = Vec2::new(32.0, 18.0);
+pub(super) const DIAGNOSTICS_BETA_HINT: &str = "Диагностика проходит бета-тестирование.";
+
+pub(super) fn paint_beta(ui: &egui::Ui, rect: egui::Rect, p: Palette) {
+    let background = mix(p.card, p.accent, 0.12);
+    ui.painter().rect_filled(rect, 5, background);
+    ui.painter().text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        "BETA",
+        FontId::proportional(10.5),
+        accent_on(p.accent, background),
+    );
+}
 #[derive(Clone, Copy)]
 pub(super) enum ButtonTone {
     Primary,

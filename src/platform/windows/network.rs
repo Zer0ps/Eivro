@@ -116,3 +116,54 @@ pub fn uplink(address: IpAddr) -> Result<String> {
         .map(|link| link.name)
         .ok_or_else(|| "Не найден внешний адаптер для VPN-сервера.".into())
 }
+
+/// A listening mixed proxy is ready before Windows necessarily finishes assigning
+/// the Wintun source address and publishing the default route to the TCP/IP stack.
+pub(crate) fn tun_ipv4_ready() -> bool {
+    let mut luid = NET_LUID_LH { Value: 0 };
+    if unsafe {
+        ConvertInterfaceAliasToLuid(
+            super::native::wide(crate::platform::TUN_NAME).as_ptr(),
+            &mut luid,
+        )
+    } != ERROR_SUCCESS
+    {
+        return false;
+    }
+    let mut link = MIB_IF_ROW2 {
+        InterfaceLuid: luid,
+        ..Default::default()
+    };
+    if unsafe { GetIfEntry2(&mut link) } != ERROR_SUCCESS || link.OperStatus != IfOperStatusUp {
+        return false;
+    }
+    let mut address = MIB_UNICASTIPADDRESS_ROW::default();
+    unsafe {
+        InitializeUnicastIpAddressEntry(&mut address);
+    }
+    address.InterfaceLuid = luid;
+    address.Address.Ipv4.sin_family = AF_INET;
+    address.Address.Ipv4.sin_addr.S_un.S_addr = u32::from_ne_bytes([172, 31, 250, 1]);
+    if unsafe { GetUnicastIpAddressEntry(&mut address) } != ERROR_SUCCESS
+        || address.SkipAsSource
+        || address.DadState != IpDadStatePreferred
+    {
+        return false;
+    }
+    let mut table = ptr::null_mut();
+    if unsafe { GetIpForwardTable2(AF_INET, &mut table) } != ERROR_SUCCESS || table.is_null() {
+        return false;
+    }
+    // IP Helper returns NumEntries contiguous rows including alignment padding.
+    unsafe {
+        let rows =
+            std::slice::from_raw_parts((*table).Table.as_ptr(), (*table).NumEntries as usize);
+        let found = rows.iter().any(|row| {
+            row.InterfaceIndex == link.InterfaceIndex
+                && row.DestinationPrefix.PrefixLength == 0
+                && row.ValidLifetime != 0
+        });
+        FreeMibTable(table.cast());
+        found
+    }
+}

@@ -112,6 +112,7 @@ jobs:
         run: |
           rustup show active-toolchain
           python3 scripts/check-release.py
+          python3 -m unittest discover -s tests -p test_package_macos.py
       - name: Fetch verified macOS cores
         run: |
           python3 scripts/fetch-core.py

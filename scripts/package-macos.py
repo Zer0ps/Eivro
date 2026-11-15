@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Build an installer without installing it or changing the host's networking."""
 import hashlib
+import sys
+import tempfile
+import time
 import os
 from pathlib import Path
 import platform
@@ -36,6 +39,32 @@ def verify_macho(binary, architecture):
             minimums.append(tuple(map(int, fields[1].split('.'))))
     if not minimums or any((version + (0, 0))[:2] > (26, 0) for version in minimums):
         raise SystemExit(f'{binary.name} does not declare compatibility with macOS 26')
+
+
+def create_dmg(source, destination, size_mib):
+    # DiskImages may briefly retain its backing device after a failed attach.
+    # Give each attempt its own source and output on the destination filesystem.
+    for attempt in range(3):
+        with tempfile.TemporaryDirectory(prefix='.eivro-dmg-', dir=destination.parent) as tmp:
+            stage = Path(tmp)
+            payload = stage / 'payload'
+            shutil.copytree(source, payload)
+            image = stage / 'Eivro.dmg'
+            result = subprocess.run([
+                'hdiutil', 'create', '-format', 'UDZO', '-fs', 'HFS+',
+                '-size', f'{size_mib}m', '-volname', 'Eivro', '-srcfolder',
+                str(payload), str(image),
+            ], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                env={**os.environ, 'LC_ALL': 'C'})
+            print(result.stdout, end='', file=sys.stderr, flush=True)
+            if result.returncode == 0:
+                image.replace(destination)
+                return
+            if attempt == 2 or 'hdiutil: create failed - Resource busy' not in result.stdout.splitlines():
+                result.check_returncode()
+        delay = 2 ** (attempt + 1)
+        print(f'DiskImages is busy. Retrying in {delay} seconds.', file=sys.stderr, flush=True)
+        time.sleep(delay)
 
 
 def main():
@@ -120,8 +149,7 @@ def main():
     payload = sum(p.stat().st_size for p in image_root.iterdir() if p.is_file())
     image_mib = (payload + 1024 * 1024 - 1) // (1024 * 1024) + 64
     print(f'DMG volume: {image_mib} MiB; host free: {shutil.disk_usage(work).free // (1024 * 1024)} MiB', flush=True)
-    run('hdiutil', 'create', '-ov', '-format', 'UDZO', '-fs', 'HFS+',
-        '-size', f'{image_mib}m', '-volname', 'Eivro', '-srcfolder', image_root, dmg)
+    create_dmg(image_root, dmg, image_mib)
     checksums = dist / f'SHA256SUMS-macos-{machine}'
     checksums.write_text(''.join(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n' for p in (package, dmg)))
     print(package)

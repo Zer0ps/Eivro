@@ -289,11 +289,13 @@ fn serve(pipe: &mut Pipe, stop: &Event) -> Result<()> {
         let result: Result<()> = (|| {
             let mut running = crate::process::start_cores(&request, mode, &signal, true)?;
             wire::send(&mut output, &Reply::Checking)?;
-            if !crate::process::check_connection(
-                &running,
-                request.probe_port.unwrap_or(request.port),
-                &signal,
-            )? {
+            if !crate::process::await_tun_network(&running, &signal)?
+                || !crate::process::check_connection(
+                    &running,
+                    request.probe_port.unwrap_or(request.port),
+                    &signal,
+                )?
+            {
                 running.shutdown()?;
                 return Ok(());
             }

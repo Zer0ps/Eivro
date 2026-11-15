@@ -373,6 +373,34 @@ pub fn start_cores(
         }
     }
 }
+/// Only used at TUN startup. Cancellation and child exits wake this bounded
+/// route convergence wait, and established sessions remain event-driven.
+pub(crate) fn await_tun_network(running: &Running, cancel: &Signal) -> Result<bool> {
+    let deadline = Instant::now() + Duration::from_secs(6);
+    let mut handles = vec![cancel.handle(), raw(&running.primary)];
+    if let Some(child) = &running.secondary {
+        handles.push(raw(child));
+    }
+    loop {
+        if cancel.signaled() {
+            return Ok(false);
+        }
+        if network::tun_ipv4_ready() {
+            return Ok(true);
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("Windows не применила адрес и маршрут адаптера TUN вовремя.".into());
+        }
+        let delay = remaining.as_millis().clamp(1, 100) as u32;
+        match wait(&handles, delay).map_err(|_| "Ошибка ожидания TUN Windows.")? {
+            Some(0) => return Ok(false),
+            Some(_) => return Err("Ядро остановилось при подготовке TUN.".into()),
+            None => {}
+        }
+    }
+}
+
 pub fn check_connection(running: &Running, port: u16, cancel: &Signal) -> Result<bool> {
     let mut child = child_command(&app_path()?)
         .args(["--check-connection", &port.to_string()])

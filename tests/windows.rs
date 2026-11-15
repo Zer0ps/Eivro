@@ -360,9 +360,7 @@ fn installed_tunnel_passes_https_and_restores_adapter() {
         let destination = "198.51.100.7:32190"
             .parse::<std::net::SocketAddr>()
             .unwrap();
-        let udp = UdpSocket::bind("0.0.0.0:0").unwrap();
-        udp.connect(destination).unwrap();
-        let source = udp.local_addr().unwrap().ip();
+        let mut sources = Vec::new();
         let baseline = echo.received.load(std::sync::atomic::Ordering::Relaxed);
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut packet = [0; 64];
@@ -372,6 +370,14 @@ fn installed_tunnel_passes_https_and_restores_adapter() {
         while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
             if remaining.is_zero() {
                 break;
+            }
+            // A connected UDP socket keeps the source chosen on its first
+            // connect. A fresh ordinary socket samples route convergence.
+            let udp = UdpSocket::bind("0.0.0.0:0").unwrap();
+            udp.connect(destination).unwrap();
+            let source = udp.local_addr().unwrap().ip();
+            if sources.last() != Some(&source) {
+                sources.push(source);
             }
             udp.set_read_timeout(Some(remaining.min(Duration::from_secs(1))))
                 .unwrap();
@@ -401,10 +407,17 @@ fn installed_tunnel_passes_https_and_restores_adapter() {
             }
         }
         let received_by_echo = echo.received.load(std::sync::atomic::Ordering::Relaxed) - baseline;
-        let best_route = if echoed {
+        let evidence = if echoed {
             None
         } else {
-            udp_route_context(destination.ip())
+            // Independent paths to the same synthetic echo distinguish source
+            // selection, TUN ingestion, and proxy-to-upstream delivery. Neither
+            // control can substitute for the mandatory wildcard-socket reply.
+            Some((
+                udp_route_context(destination.ip()),
+                bound_echo(destination),
+                mixed_udp_echo(port, destination),
+            ))
         };
         stopped(session, rx, port);
         assert!(
@@ -415,19 +428,66 @@ fn installed_tunnel_passes_https_and_restores_adapter() {
         );
         assert!(
             echoed && received_by_echo > 0,
-            "TUN UDP echo failed: xray={xray}, attempts={attempts}, received_by_echo={received_by_echo}, socket_error={last:?}, source={source}, best_route={best_route:?}"
+            "TUN UDP echo failed: xray={xray}, attempts={attempts}, received_by_echo={received_by_echo}, socket_error={last:?}, sources={sources:?}, (route,bound_tun_echo,mixed_udp_echo)={evidence:?}"
         );
     }
 }
 
+fn bound_echo(destination: std::net::SocketAddr) -> std::io::Result<bool> {
+    let udp = UdpSocket::bind("172.31.250.1:0")?;
+    udp.set_read_timeout(Some(Duration::from_secs(2)))?;
+    udp.connect(destination)?;
+    udp.send(b"eivro-bound")?;
+    let mut reply = [0; 64];
+    let size = udp.recv(&mut reply)?;
+    Ok(&reply[..size] == b"eivro-bound")
+}
+
+fn mixed_udp_echo(port: u16, destination: std::net::SocketAddr) -> std::io::Result<bool> {
+    let mut control =
+        TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), Duration::from_secs(2))?;
+    control.set_read_timeout(Some(Duration::from_secs(2)))?;
+    control.set_write_timeout(Some(Duration::from_secs(2)))?;
+    control.write_all(&[5, 1, 0])?;
+    let mut greeting = [0; 2];
+    control.read_exact(&mut greeting)?;
+    if greeting != [5, 0] {
+        return Ok(false);
+    }
+    let udp = UdpSocket::bind("127.0.0.1:0")?;
+    udp.set_read_timeout(Some(Duration::from_secs(2)))?;
+    let mut associate = vec![5, 3, 0, 1, 127, 0, 0, 1];
+    associate.extend(udp.local_addr()?.port().to_be_bytes());
+    control.write_all(&associate)?;
+    let mut response = [0; 10];
+    control.read_exact(&mut response)?;
+    if response[..4] != [5, 0, 0, 1] {
+        return Ok(false);
+    }
+    // The listener and client are loopback-only. A server may return 0.0.0.0.
+    let relay = u16::from_be_bytes([response[8], response[9]]);
+    udp.connect(("127.0.0.1", relay))?;
+    let std::net::IpAddr::V4(ip) = destination.ip() else {
+        return Ok(false);
+    };
+    let mut message = vec![0, 0, 0, 1];
+    message.extend(ip.octets());
+    message.extend(destination.port().to_be_bytes());
+    message.extend(b"eivro-socks");
+    udp.send(&message)?;
+    let mut reply = [0; 64];
+    let size = udp.recv(&mut reply)?;
+    Ok(reply[..size] == message)
+}
+
 fn udp_route_context(destination: std::net::IpAddr) -> Option<String> {
     let output = Command::new("powershell.exe").args(["-NoProfile","-NonInteractive","-Command",
-        &format!("Find-NetRoute -RemoteIPAddress '{destination}' -ErrorAction Stop | Select-Object InterfaceIndex,InterfaceAlias,AddressFamily,DestinationPrefix | ConvertTo-Json -Compress")
+        &format!(r#"$ErrorActionPreference='Stop'; $r=@(Find-NetRoute -RemoteIPAddress '{destination}' | Select-Object InterfaceIndex,InterfaceAlias,AddressFamily,DestinationPrefix,IPAddress); $a=@(Get-NetIPAddress -InterfaceAlias Eivro -AddressFamily IPv4 | Select-Object PrefixLength,AddressState,SkipAsSource); $i=@(Get-NetIPInterface -AddressFamily IPv4 | Where-Object ConnectionState -eq Connected | Select-Object InterfaceAlias,InterfaceMetric,WeakHostSend,Forwarding); @{{best=$r;tun=$a;interfaces=$i}} | ConvertTo-Json -Depth 4 -Compress"#)
     ]).output().ok()?;
     output.status.success().then(|| {
         String::from_utf8_lossy(&output.stdout)
             .chars()
-            .take(500)
+            .take(1400)
             .collect()
     })
 }

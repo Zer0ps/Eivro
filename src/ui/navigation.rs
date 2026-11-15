@@ -63,13 +63,23 @@ impl App {
             page,
             color,
         );
-        ui.painter().text(
-            response.rect.left_center() + Vec2::new(40.0, 0.0),
+        let label_rect = ui.painter().text(
+            response.rect.left_center() + Vec2::new(36.0, 0.0),
             Align2::LEFT_CENTER,
             title,
             FontId::proportional(14.0),
             color,
         );
+        if page == Page::Diagnostics {
+            let badge = egui::Rect::from_min_size(
+                egui::pos2(
+                    label_rect.right() + 4.0,
+                    response.rect.center().y - design::BETA_SIZE.y / 2.0,
+                ),
+                design::BETA_SIZE,
+            );
+            design::paint_beta(ui, badge, p);
+        }
         if selected {
             ui.painter().rect_filled(
                 egui::Rect::from_center_size(
@@ -88,7 +98,20 @@ impl App {
                 egui::StrokeKind::Inside,
             );
         }
-        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, title));
+        let response = if page == Page::Diagnostics {
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::Button,
+                    true,
+                    "Диагностика, бета-версия",
+                )
+            });
+            response.on_hover_text(design::DIAGNOSTICS_BETA_HINT)
+        } else {
+            response
+                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, title));
+            response
+        };
         if response.clicked() {
             self.navigate(page, ctx);
         }

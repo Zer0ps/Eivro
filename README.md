@@ -26,13 +26,13 @@ macOS-версия пока предварительная: сборка и ог
 Fedora:
 
 ```sh
-sudo dnf install ./eivro-1.3.0-1.x86_64.rpm
+sudo dnf install ./eivro-1.5.1-1.x86_64.rpm
 ```
 
 Debian:
 
 ```sh
-sudo apt install ./eivro_1.3.0_amd64.deb
+sudo apt install ./eivro_1.5.1_amd64.deb
 ```
 
 После установки откройте Eivro из меню приложений.
