@@ -57,55 +57,38 @@ impl Report {
     /// Export an allowlisted summary, never a best-effort scrub of local evidence.
     /// Even a malicious hostname/profile name cannot enter this output.
     pub fn sanitized_text(&self) -> String {
-        let mut text = format!(
-            "Eivro {} — диагностика без сетевых адресов\n",
-            env!("CARGO_PKG_VERSION")
-        );
-        for finding in &self.findings {
-            let label = match finding.id.as_str() {
-                "uplink" => "Физическое подключение",
-                "routes4" => "Маршруты IPv4",
-                "routes6" => "Маршруты IPv6",
-                "policy" => "Политики ядра",
-                "resolver" => "Системный DNS",
-                "nm_dns" => "DNS активного подключения",
-                "dns_route" => "Маршрут к DNS",
-                "target_route" => "Маршрут проблемного адреса",
-                "settings_file" => "Сохранённые настройки",
-                "subscription" => "Последние данные подписки",
-                "firewall" => "Область проверки сетевого фильтра",
-                "endpoint" => "Адрес сервера VPN",
-                "endpoint_route" => "Маршрут к серверу VPN",
-                "fakeip" => "Виртуальный адрес сервера VPN",
-                "profile" => "Профиль Eivro",
-                "exit" => "Сетевой выход",
-                "rule" => "Правила выбранного адреса",
-                "proxy_port" => "Локальный прокси",
-                "system_proxy" => "Системный прокси",
-                "core" => "Ядро",
-                "helper" => "Помощник TUN",
-                "xray" => "Ядро Xray",
-                "dns_probe" => "Проверка разрешения имени",
-                "https" => "Проверка HTTPS",
-                "direct" => "Проверка физического выхода",
-                "scope" => "Область проверки",
-                "state" => "Состояние диагностики",
-                _ => "Дополнительная проверка",
-            };
-            let status = match finding.status {
-                Status::Pass => "OK",
-                Status::Warning => "Внимание",
-                Status::Error => "Ошибка",
-                Status::Unknown => "Не проверено",
-            };
-            text.push_str(&format!("[{status}] {label}\n"));
+        use std::fmt::Write;
+        let mut text = format!("Отчёт Eivro {}\n", env!("CARGO_PKG_VERSION"));
+        for (status, heading) in [
+            (Status::Error, "Ошибка"),
+            (Status::Warning, "Внимание"),
+            (Status::Pass, "В порядке"),
+            (Status::Unknown, "Справочно"),
+        ] {
+            // One paragraph per status. Preserve disagreements between probes
+            // of the same category (e.g. direct vs proxy HTTPS) and their counts.
+            let mut labels = std::collections::BTreeMap::new();
+            for finding in self.findings.iter().filter(|f| f.status == status) {
+                *labels.entry(export_label(&finding.id)).or_insert(0usize) += 1;
+            }
+            if labels.is_empty() {
+                continue;
+            }
+            let _ = writeln!(text, "\n{heading}");
+            for (index, (label, count)) in labels.into_iter().enumerate() {
+                if index > 0 {
+                    text.push_str(" · ");
+                }
+                text.push_str(label);
+                if count > 1 {
+                    let _ = write!(text, " ×{count}");
+                }
+            }
+            text.push('\n');
         }
         if self.cancelled {
-            text.push_str("Проверка отменена; результаты неполные.\n");
+            text.push_str("\nПроверка отменена. Результат частичный.\n");
         }
-        text.push_str(
-            "Детали, адреса, интерфейсы, имена профилей и параметры доступа исключены.\n",
-        );
         text
     }
 
@@ -126,6 +109,39 @@ impl Report {
             advice: advice.into(),
             action,
         });
+    }
+}
+
+fn export_label(id: &str) -> &'static str {
+    match id {
+        "uplink" => "Физическое подключение",
+        "routes4" => "Маршруты IPv4",
+        "routes6" => "Маршруты IPv6",
+        "policy" => "Политики ядра",
+        "resolver" => "Системный DNS",
+        "nm_dns" => "DNS активного подключения",
+        "dns_route" => "Маршрут к DNS",
+        "target_route" => "Маршрут проблемного адреса",
+        "settings_file" => "Сохранённые настройки",
+        "subscription" => "Последние данные подписки",
+        "firewall" => "Область проверки сетевого фильтра",
+        "endpoint" => "Адрес сервера VPN",
+        "endpoint_route" => "Маршрут к серверу VPN",
+        "fakeip" => "Виртуальный адрес сервера VPN",
+        "profile" => "Профиль Eivro",
+        "exit" => "Сетевой выход",
+        "rule" => "Правила выбранного адреса",
+        "proxy_port" => "Локальный прокси",
+        "system_proxy" => "Системный прокси",
+        "core" => "Ядро",
+        "helper" => "Помощник TUN",
+        "xray" => "Ядро Xray",
+        "dns_probe" => "Проверка разрешения имени",
+        "https" => "Проверка HTTPS",
+        "direct" => "Проверка физического выхода",
+        "scope" => "Область проверки",
+        "state" => "Состояние диагностики",
+        _ => "Дополнительная проверка",
     }
 }
 

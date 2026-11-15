@@ -57,3 +57,50 @@ class DiskImagesTests(unittest.TestCase):
 
     def test_other_failure_preserves_existing_image_and_is_not_retried(self):
         self.exercise(['hdiutil: create failed - No space left on device\n'])
+
+
+class PublicationTests(unittest.TestCase):
+    def test_missing_staged_image_preserves_entire_previous_release(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dist = Path(tmp)
+            stage = dist / 'attempt'
+            stage.mkdir()
+            pkg, dmg = stage / 'Eivro.pkg', stage / 'Eivro.dmg'
+            pkg.write_bytes(b'new package')
+            manifest = dist / 'SHA256SUMS-macos-arm64'
+            for path in (dist / pkg.name, dist / dmg.name, manifest):
+                path.write_bytes(b'previous')
+            with self.assertRaises(FileNotFoundError):
+                package.publish(dist, 'arm64', pkg, dmg)
+            self.assertTrue(all(p.read_bytes() == b'previous' for p in (dist / pkg.name, dist / dmg.name, manifest)))
+
+    def test_failed_second_rename_never_leaves_a_published_checksum(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dist = Path(tmp)
+            stage = dist / 'attempt'
+            stage.mkdir()
+            pkg, dmg = stage / 'Eivro.pkg', stage / 'Eivro.dmg'
+            pkg.write_bytes(b'pkg')
+            dmg.write_bytes(b'dmg')
+            marker = dist / 'SHA256SUMS-macos-arm64'
+            marker.write_bytes(b'previous manifest')
+            (dist / dmg.name).mkdir()  # No file may be renamed over this destination.
+            with self.assertRaises(OSError):
+                package.publish(dist, 'arm64', pkg, dmg)
+            self.assertFalse(marker.exists())
+
+    def test_published_manifest_authenticates_both_new_outputs(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            dist = Path(tmp)
+            stage = dist / 'attempt'
+            stage.mkdir()
+            pkg, dmg = stage / 'Eivro.pkg', stage / 'Eivro.dmg'
+            pkg.write_bytes(b'pkg')
+            dmg.write_bytes(b'dmg')
+            package.publish(dist, 'arm64', pkg, dmg)
+            manifest = (dist / 'SHA256SUMS-macos-arm64').read_text().splitlines()
+            self.assertEqual(manifest, [
+                hashlib.sha256((dist / f.name).read_bytes()).hexdigest() + '  ' + f.name
+                for f in (pkg, dmg)
+            ])

@@ -1,5 +1,5 @@
 mod views;
-use super::design::{ButtonTone, command, enabled_command, heading, mix, modal};
+use super::design::{ButtonTone, command, enabled_command, heading, modal};
 use super::*;
 use eivro::diagnostics::{self as engine, Action, Finding, Report, Request, Status};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,6 +26,8 @@ pub(super) struct State {
     repair_error: Option<String>,
     recheck_when_idle: bool,
     show_technical: bool,
+    evidence_stage: views::Stage,
+    editing_check: bool,
 }
 
 struct Context {
@@ -54,6 +56,11 @@ impl State {
 
     pub(super) fn invalidate(&mut self) {
         if self.has_context() {
+            // The preview is a snapshot of the text to be copied. A preview
+            // opened before this transition no longer describes the report.
+            if !self.stale {
+                self.export = None;
+            }
             self.stale = true;
             self.confirmation = None;
             // A confirmed repair can emit its own DNS/link notification. Its
@@ -82,6 +89,19 @@ impl State {
 
     fn busy(&self) -> bool {
         self.receiver.is_some()
+    }
+
+    fn open_export(&mut self) {
+        if self.busy() {
+            return;
+        }
+        self.export = self.report.as_ref().map(|report| {
+            let mut text = report.sanitized_text();
+            if self.stale {
+                text.push_str("Результат устарел.\n");
+            }
+            text
+        });
     }
 
     pub(super) fn modal_open(&self) -> bool {
@@ -183,8 +203,10 @@ impl App {
         let (tx, rx) = mpsc::sync_channel(32);
         self.diagnostics.context = Some(Context::capture(self));
         self.diagnostics.last_network_tests = request.network_tests;
+        self.diagnostics.editing_check = false;
         self.diagnostics.user_cancelled = false;
         self.diagnostics.repairing = false;
+        self.diagnostics.export = None;
         self.diagnostics.report = None;
         self.diagnostics.stale = false;
         self.diagnostics.progress = "Читаем состояние сети…".into();
@@ -429,22 +451,27 @@ impl App {
                 self.apply_diagnostics_action(action, ctx);
             }
         }
-        if let Some(mut text) = self.diagnostics.export.clone() {
+        if let Some(text) = self.diagnostics.export.as_deref() {
             let mut close = false;
             let response = modal(ctx, "diagnostics-export").show(ctx, |ui| {
                 ui.set_width((ctx.content_rect().width() - 64.0).clamp(220.0, 540.0));
-                ui.label(heading("Отчёт без личных данных", 23.0));
-                ui.add_space(8.0);
-                ui.label(RichText::new("В буфер обмена попадёт только этот текст. Адреса, имена интерфейсов и параметры доступа исключены.").color(p.muted));
+                ui.label(heading("Отчёт для отправки", 23.0));
+                ui.add_space(6.0);
+                ui.label(RichText::new("В буфер попадёт только текст ниже.").color(p.muted));
                 ui.add_space(14.0);
-                egui::ScrollArea::vertical().max_height((ctx.content_rect().height() - 280.0).max(80.0)).show(ui, |ui| {
-                    ui.add(egui::TextEdit::multiline(&mut text).interactive(false).desired_width(f32::INFINITY).font(egui::TextStyle::Monospace));
-                });
-                ui.add_space(18.0);
+                egui::ScrollArea::vertical()
+                    .id_salt("export-document")
+                    .max_height((ctx.content_rect().height() - 240.0).max(60.0))
+                    .show(ui, |ui| {
+                        views::export_preview(ui, text, p);
+                    });
+                ui.add_space(14.0);
                 ui.horizontal_wrapped(|ui| {
                     close = command(ui, "Закрыть", ButtonTone::Secondary, Vec2::ZERO, p).clicked();
-                    if command(ui, "Скопировать отчёт", ButtonTone::Primary, Vec2::ZERO, p).clicked() {
-                        ctx.copy_text(text.clone());
+                    if command(ui, "Скопировать отчёт", ButtonTone::Primary, Vec2::ZERO, p)
+                        .clicked()
+                    {
+                        ctx.copy_text(text.to_owned());
                         self.diagnostics.notice = Some("Обезличенный отчёт скопирован.".into());
                         close = true;
                     }
@@ -479,29 +506,6 @@ fn status_color(status: Status, p: Palette) -> Color32 {
         Status::Pass => p.accent,
         Status::Unknown => p.muted,
     }
-}
-
-fn status_symbol(ui: &mut egui::Ui, status: Status, p: Palette, size: f32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), egui::Sense::hover());
-    let color = status_color(status, p);
-    ui.painter()
-        .circle_filled(rect.center(), size * 0.5, mix(p.card, color, 0.10));
-    ui.painter().circle_stroke(
-        rect.center(),
-        size * 0.5 - 0.5,
-        Stroke::new(1.0_f32, mix(p.card, color, 0.35)),
-    );
-    ui.painter().text(
-        rect.center(),
-        Align2::CENTER_CENTER,
-        match status {
-            Status::Pass => "✓",
-            Status::Unknown => "i",
-            _ => "!",
-        },
-        FontId::proportional(21.0),
-        color,
-    );
 }
 
 fn action_label(action: &Action) -> &'static str {
@@ -657,6 +661,146 @@ mod tests {
         assert!(cancel.load(Ordering::Relaxed));
         assert!(!app.diagnostics.actionable());
         assert!(!app.diagnostics.modal_open());
+    }
+
+    #[test]
+    fn network_change_retires_the_current_clipboard_preview() {
+        let mut app = App::model(Settings::default(), None, None);
+        app.diagnostics.context = Some(Context::capture(&app));
+        app.diagnostics.report = Some(Report::default());
+        app.diagnostics.open_export();
+        assert!(app.diagnostics.export.is_some());
+        app.diagnostics.invalidate();
+        assert!(app.diagnostics.export.is_none());
+        app.diagnostics.open_export();
+        assert!(
+            app.diagnostics
+                .export
+                .as_deref()
+                .unwrap()
+                .contains("устарел")
+        );
+        app.diagnostics.invalidate();
+        assert!(
+            app.diagnostics.export.is_some(),
+            "historical snapshot is already labelled"
+        );
+    }
+
+    #[test]
+    fn repeated_reports_and_network_changes_keep_exports_private_and_actions_current() {
+        let mut app = App::model(Settings::default(), None, None);
+        app.diagnostics.context = Some(Context::capture(&app));
+        // Use all entry points of a finding which may hold local evidence.
+        let marker = "private-example-location.test";
+        let findings = (0..64)
+            .map(|i| Finding {
+                id: if i % 2 == 0 {
+                    "resolver".into()
+                } else {
+                    marker.into()
+                },
+                status: if i % 2 == 0 {
+                    Status::Error
+                } else {
+                    Status::Unknown
+                },
+                title: marker.into(),
+                detail: marker.into(),
+                advice: marker.into(),
+                action: Some(Action::RestoreDns {
+                    interface: marker.into(),
+                }),
+            })
+            .collect();
+        app.diagnostics.report = Some(Report {
+            findings,
+            network_fingerprint: marker.into(),
+            cancelled: false,
+        });
+        for _ in 0..1024 {
+            // Simulate completion of a fresh check, then a real network event.
+            app.diagnostics.stale = false;
+            app.diagnostics.confirmation = Some(Action::Reconnect);
+            app.diagnostics.open_export();
+            let text = app.diagnostics.export.as_ref().unwrap();
+            assert!(!text.contains(marker));
+            assert!(!text.contains("устарел"));
+            app.diagnostics.invalidate();
+            assert!(app.diagnostics.export.is_none());
+            assert!(app.diagnostics.confirmation.is_none());
+            assert!(!app.diagnostics.actionable());
+            app.diagnostics.open_export();
+            let historical = app.diagnostics.export.as_ref().unwrap();
+            assert!(historical.contains("устарел"));
+            assert!(!historical.contains(marker));
+        }
+    }
+
+    #[test]
+    #[ignore = "Bounded report layout load measurement; run explicitly in release mode"]
+    fn completed_report_load_does_not_launch_background_work() {
+        use std::time::Instant;
+        let mut app = App::model(Settings::default(), None, None);
+        let ctx = egui::Context::default();
+        crate::emoji::install(&ctx);
+        app.diagnostics.context = Some(Context::capture(&app));
+        app.diagnostics.last_network_tests = true;
+        let ids = [
+            "uplink",
+            "resolver",
+            "dns_route",
+            "exit",
+            "subscription",
+            "rule",
+            "https",
+            "direct",
+        ];
+        app.diagnostics.report = Some(Report {
+            findings: (0..96)
+                .map(|i| Finding {
+                    id: ids[i % ids.len()].into(),
+                    status: if i % 13 == 0 {
+                        Status::Warning
+                    } else {
+                        Status::Pass
+                    },
+                    title: format!("Проверка №{i}"),
+                    detail: "Синтетическое локальное наблюдение. ".repeat(8),
+                    advice: "Проверьте выбранную сеть.".into(),
+                    action: None,
+                })
+                .collect(),
+            ..Report::default()
+        });
+        let mut samples = Vec::with_capacity(480);
+        for pass in 0..480 {
+            let width = if pass % 120 < 60 { 320.0 } else { 960.0 };
+            let started = Instant::now();
+            let _output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        Vec2::new(width, 760.0),
+                    )),
+                    time: Some(pass as f64 / 60.0),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        app.diagnostics_page(ui, ctx, app.palette());
+                    });
+                },
+            );
+            samples.push(started.elapsed().as_micros());
+            assert!(!app.diagnostics.busy());
+            assert!(app.diagnostics.export.is_none() && app.diagnostics.confirmation.is_none());
+        }
+        samples.sort_unstable();
+        eprintln!(
+            "Report layout: 480 frames, 96 findings, median {} us, p95 {} us",
+            samples[239], samples[455]
+        );
     }
 
     #[test]

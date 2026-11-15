@@ -375,7 +375,7 @@ pub fn start_cores(
 }
 /// Only used at TUN startup. Cancellation and child exits wake this bounded
 /// route convergence wait, and established sessions remain event-driven.
-pub(crate) fn await_tun_network(running: &Running, cancel: &Signal) -> Result<bool> {
+fn await_tun_network(running: &Running, cancel: &Signal) -> Result<bool> {
     let deadline = Instant::now() + Duration::from_secs(6);
     let mut handles = vec![cancel.handle(), raw(&running.primary)];
     if let Some(child) = &running.secondary {
@@ -399,6 +399,38 @@ pub(crate) fn await_tun_network(running: &Running, cancel: &Signal) -> Result<bo
             None => {}
         }
     }
+}
+
+pub(crate) fn check_tun_connection(running: &Running, port: u16, cancel: &Signal) -> Result<bool> {
+    confirm_tun_ready(
+        || await_tun_network(running, cancel),
+        || check_connection(running, port, cancel),
+        network::tun_ipv4_ready,
+        || cancel.signaled(),
+    )
+}
+
+// The HTTPS worker checks a loopback proxy. Windows may lose its tunnel address
+// or route while the probe runs, so its success cannot reuse the pre-probe snapshot.
+fn confirm_tun_ready(
+    wait_network: impl FnOnce() -> Result<bool>,
+    probe: impl FnOnce() -> Result<bool>,
+    network_ready: impl FnOnce() -> bool,
+    cancelled: impl Fn() -> bool,
+) -> Result<bool> {
+    if !wait_network()? || !probe()? || cancelled() {
+        return Ok(false);
+    }
+    let still_ready = network_ready();
+    if cancelled() {
+        return Ok(false);
+    }
+    if !still_ready {
+        return Err(
+            "Маршрут или адрес TUN изменился во время проверки. Повторите подключение.".into(),
+        );
+    }
+    Ok(true)
 }
 
 pub fn check_connection(running: &Running, port: u16, cancel: &Signal) -> Result<bool> {
@@ -622,5 +654,41 @@ impl ProxyGuard {
 impl Drop for ProxyGuard {
     fn drop(&mut self) {
         let _ = self.stop();
+    }
+}
+
+#[cfg(test)]
+mod readiness_tests {
+    use super::confirm_tun_ready;
+    use std::cell::Cell;
+
+    #[test]
+    fn successful_proxy_probe_cannot_publish_a_lost_tunnel_route() {
+        let route = Cell::new(true);
+        let result = confirm_tun_ready(
+            || Ok(route.get()),
+            || {
+                route.set(false);
+                Ok(true)
+            },
+            || route.get(),
+            || false,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn revoked_start_never_publishes_ready() {
+        let cancelled = Cell::new(false);
+        let result = confirm_tun_ready(
+            || Ok(true),
+            || Ok(true),
+            || {
+                cancelled.set(true);
+                false
+            },
+            || cancelled.get(),
+        );
+        assert!(!result.unwrap());
     }
 }

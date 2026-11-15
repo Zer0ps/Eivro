@@ -78,9 +78,18 @@ def main():
         expected = f'Eivro {"TUN " if name == "eivro-tun" else ""}{VERSION}'
         if version != expected:
             raise SystemExit(f'Stale {name}: rebuild the current release')
-    work = ROOT / 'work/package-macos'
-    if work.exists():
-        shutil.rmtree(work)
+    import fcntl
+    dist = ROOT / 'dist'
+    dist.mkdir(exist_ok=True)
+    # Serialize flat-name publication for a shared checkout. Each invocation
+    # builds privately on dist's filesystem, including all pkgbuild outputs.
+    with (dist / '.package-macos.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        with tempfile.TemporaryDirectory(prefix='.eivro-macos-', dir=dist) as tmp:
+            build(Path(tmp), dist, machine)
+
+
+def build(work, dist, machine):
     stage = work / 'root'
     app = stage / 'Applications/Eivro.app/Contents'
     helper = stage / 'Library/PrivilegedHelperTools/io.eivro'
@@ -124,9 +133,9 @@ def main():
         run('codesign', '--force', '--sign', '-', '--options', 'runtime', binary)
     run('codesign', '--force', '--sign', '-', '--options', 'runtime', app.parent)
     run('codesign', '--verify', '--deep', '--strict', app.parent)
-    dist = ROOT / 'dist'
-    dist.mkdir(exist_ok=True)
-    package = dist / f'Eivro-{VERSION}-macos-{machine}.pkg'
+    image_root = work / 'image'
+    image_root.mkdir()
+    package = image_root / f'Eivro-{VERSION}-macos-{machine}.pkg'
     components = work / 'components.plist'
     run('pkgbuild', '--analyze', '--root', stage, components)
     descriptions = plistlib.loads(components.read_bytes())
@@ -139,21 +148,34 @@ def main():
     run('pkgbuild', '--root', stage, '--component-plist', components,
         '--identifier', 'io.eivro.pkg', '--version', VERSION,
         '--install-location', '/', '--ownership', 'recommended', '--scripts', ROOT / 'packaging/macos/scripts', package)
-    image_root = work / 'image'
-    image_root.mkdir()
-    copy(package, image_root / package.name)
     (image_root / 'Read me.txt').write_text('Eivro for macOS 26 or later.\nOpen the .pkg installer, then launch Eivro from Applications.\nThis preview is ad-hoc signed, not notarized by Apple.\nVPN, DNS recovery and energy use require validation on a Mac before a stable macOS release.\n')
-    dmg = dist / f'Eivro-{VERSION}-macos-{machine}.dmg'
+    dmg = work / f'Eivro-{VERSION}-macos-{machine}.dmg'
     # hdiutil's automatic source-folder sizing can leave too little room for a
     # large PKG on the temporary filesystem. Empty space compresses away in UDZO.
     payload = sum(p.stat().st_size for p in image_root.iterdir() if p.is_file())
     image_mib = (payload + 1024 * 1024 - 1) // (1024 * 1024) + 64
     print(f'DMG volume: {image_mib} MiB; host free: {shutil.disk_usage(work).free // (1024 * 1024)} MiB', flush=True)
     create_dmg(image_root, dmg, image_mib)
-    checksums = dist / f'SHA256SUMS-macos-{machine}'
-    checksums.write_text(''.join(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n' for p in (package, dmg)))
-    print(package)
-    print(dmg)
+    publish(dist, machine, package, dmg)
+
+
+def publish(dist, machine, package, dmg):
+    manifest = dmg.parent / f'SHA256SUMS-macos-{machine}'
+    artifacts = (package, dmg)
+    digests = []
+    for item in artifacts:
+        with item.open('rb') as stream:
+            digests.append(f'{hashlib.file_digest(stream, "sha256").hexdigest()}  {item.name}\n')
+    manifest.write_text(''.join(digests), encoding='ascii')
+    # A checksum manifest is the commit record for these fixed filenames.
+    # A build failure above preserves the previous complete set. If the
+    # process dies during the renames, an incomplete set has no manifest.
+    (dist / manifest.name).unlink(missing_ok=True)
+    for item in (*artifacts, manifest):
+        item.replace(dist / item.name)
+    print(dist / package.name)
+    print(dist / dmg.name)
+
 
 if __name__ == '__main__':
     main()

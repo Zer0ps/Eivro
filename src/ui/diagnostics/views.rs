@@ -62,18 +62,11 @@ pub(super) fn summary(state: &State) -> (String, String, Status) {
                 "Можно запустить её снова.",
                 Status::Unknown,
             )
-        } else if report.findings.iter().any(|f| f.status == Status::Error) {
-            (
-                "Найдены проблемы",
-                "Посмотрите, что мешает соединению.",
-                Status::Error,
-            )
-        } else if report.findings.iter().any(|f| f.status == Status::Warning) {
-            (
-                "Есть что проверить",
-                "Причина может быть в сети или её настройках.",
-                Status::Warning,
-            )
+        } else if let Some(f) =
+            primary_finding(report).filter(|f| matches!(f.status, Status::Error | Status::Warning))
+        {
+            let (title, hint) = next_step(f);
+            (title, hint, f.status)
         } else if state.last_network_tests
             && (!report.findings.iter().any(|f| f.id == "https")
                 || report.findings.iter().any(|f| {
@@ -93,8 +86,8 @@ pub(super) fn summary(state: &State) -> (String, String, Status) {
                 .any(|f| f.id == "https" && f.status == Status::Pass)
         {
             (
-                "Соединение работает",
-                "Проверка HTTPS прошла успешно.",
+                "Сайт отвечает",
+                "Получен ответ по защищённому соединению.",
                 Status::Pass,
             )
         } else if report.findings.iter().any(|f| f.status == Status::Pass) {
@@ -140,7 +133,24 @@ impl App {
         egui::ScrollArea::vertical()
             .id_salt("diagnostics-page")
             .show(ui, |ui| {
-                self.diagnostic_controls(ui, ctx, p);
+                if self.diagnostics.report.is_some()
+                    && !self.diagnostics.editing_check
+                    && !self.diagnostics.busy()
+                {
+                    self.connection_report(ui, ctx, p);
+                } else {
+                    if self.diagnostics.report.is_some()
+                        && !self.diagnostics.busy()
+                        && command(ui, "← К результату", ButtonTone::Quiet, Vec2::ZERO, p).clicked()
+                    {
+                        self.diagnostics.editing_check = false;
+                    }
+                    self.diagnostic_controls(ui, ctx, p);
+                    if self.diagnostics.busy() {
+                        ui.add_space(12.0);
+                        ui.label(RichText::new(&self.diagnostics.progress).color(p.muted));
+                    }
+                }
                 if let Some(error) = &self.diagnostics.repair_error {
                     ui.add_space(12.0);
                     ui.colored_label(p.error, error);
@@ -149,77 +159,122 @@ impl App {
                     ui.add_space(10.0);
                     ui.label(RichText::new(notice).color(p.muted));
                 }
-                if self.diagnostics.report.is_some() || self.diagnostics.busy() {
-                    ui.add_space(26.0);
-                    let (title, subtitle, status) = summary(&self.diagnostics);
-                    ui.horizontal_top(|ui| {
-                        status_symbol(ui, status, p, 34.0);
-                        ui.add_space(6.0);
-                        ui.vertical(|ui| {
-                            ui.label(heading(title, 21.0));
-                            if !subtitle.is_empty() {
-                                ui.label(RichText::new(subtitle).color(p.muted));
-                            }
-                        });
-                    });
-                }
-                if self.diagnostics.busy() {
-                    ui.add_space(12.0);
-                    ui.label(
-                        RichText::new(&self.diagnostics.progress)
-                            .small()
-                            .color(p.muted),
+            });
+    }
+
+    fn connection_report(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, p: Palette) {
+        let (title, subtitle, status) = summary(&self.diagnostics);
+        let report = self
+            .diagnostics
+            .report
+            .as_ref()
+            .expect("result view requires a report");
+        let current = !self.diagnostics.stale && !report.cancelled;
+        let first = if current {
+            primary_finding(report)
+        } else {
+            None
+        };
+        let stage = first.map_or(Stage::Device, |f| Stage::for_id(&f.id));
+        let mut next = None;
+        let mut retry = false;
+        let mut edit = false;
+        egui::Frame::new()
+            .fill(p.card)
+            .corner_radius(14)
+            .inner_margin(20)
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                let tint = status_color(status, p);
+                ui.horizontal_wrapped(|ui| {
+                    let (rect, _) =
+                        ui.allocate_exact_size(Vec2::new(19.0, 10.0), egui::Sense::hover());
+                    ui.painter().line_segment(
+                        [rect.left_center(), rect.right_center()],
+                        Stroke::new(2.5_f32, tint),
                     );
-                }
-                // Only the small visible subset needs owning across UI actions.
-                let mut findings: Vec<_> = self
-                    .diagnostics
-                    .report
-                    .as_ref()
-                    .into_iter()
-                    .flat_map(|r| r.findings.iter().enumerate())
-                    .filter(|(_, f)| needs_attention(f))
-                    .map(|(i, f)| (i, f.clone()))
-                    .collect();
-                findings.sort_by_key(|(_, f)| match f.status {
-                    Status::Error => 0,
-                    Status::Warning => 1,
-                    _ => 2,
+                    ui.label(
+                        RichText::new(if self.diagnostics.last_network_tests {
+                            "Доступ к сайту"
+                        } else {
+                            "На устройстве"
+                        })
+                        .small()
+                        .strong()
+                        .color(p.muted),
+                    );
                 });
-                if !findings.is_empty() {
-                    ui.add_space(20.0);
-                    egui::Frame::new()
-                        .fill(p.card)
-                        .corner_radius(12)
-                        .inner_margin(16)
-                        .show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            for (i, (index, finding)) in findings.iter().enumerate() {
-                                if i > 0 {
-                                    ui.add_space(8.0);
-                                    ui.separator();
-                                    ui.add_space(8.0);
-                                }
-                                self.diagnostic_row(ui, ctx, finding, *index, p, false);
-                            }
-                        });
+                ui.add_space(8.0);
+                ui.label(heading(title, 28.0));
+                if !subtitle.is_empty() {
+                    ui.label(RichText::new(subtitle).color(p.muted));
                 }
-                if self.diagnostics.report.is_some() {
-                    ui.add_space(16.0);
-                    if command(
+                if current {
+                    ui.add_space(20.0);
+                    stage_path(ui, report, self.diagnostics.last_network_tests, p);
+                }
+                if let Some(action) = first.and_then(|f| f.action.as_ref()) {
+                    ui.add_space(14.0);
+                    if enabled_command(
                         ui,
-                        "Технические сведения →",
-                        ButtonTone::Quiet,
+                        self.diagnostics_action_available(action),
+                        action_label(action),
+                        ButtonTone::Secondary,
                         Vec2::ZERO,
                         p,
                     )
                     .clicked()
                     {
-                        self.diagnostics.open_technical();
-                        self.navigate(Page::Information, ctx);
+                        next = Some(action.clone());
                     }
                 }
+                ui.add_space(18.0);
+                ui.horizontal_wrapped(|ui| {
+                    retry = enabled_command(
+                        ui,
+                        !self.diagnostics_session_busy(),
+                        "Проверить снова",
+                        if current && first.is_some_and(|f| f.action.is_some()) {
+                            ButtonTone::Secondary
+                        } else {
+                            ButtonTone::Primary
+                        },
+                        Vec2::ZERO,
+                        p,
+                    )
+                    .clicked();
+                    edit = command(ui, "Изменить проверку", ButtonTone::Quiet, Vec2::ZERO, p)
+                        .clicked();
+                });
             });
+        ui.add_space(12.0);
+        if command(ui, "Подробный отчёт →", ButtonTone::Quiet, Vec2::ZERO, p).clicked()
+        {
+            self.diagnostics.open_technical();
+            self.diagnostics.evidence_stage = stage;
+            self.navigate(Page::Information, ctx);
+        } else if let Some(action) = next {
+            self.diagnostic_action(action, ctx);
+        } else if retry && self.diagnostics.stale {
+            // The edited target or path may now differ from the old report.
+            // Present the selected settings before sending any new requests.
+            self.diagnostics.editing_check = true;
+        } else if retry {
+            self.start_diagnostics_with(ctx, !self.diagnostics.last_network_tests);
+        } else if edit {
+            self.diagnostics.editing_check = true;
+        }
+    }
+
+    fn diagnostic_action(&mut self, action: Action, ctx: &egui::Context) {
+        if !self.diagnostics_action_available(&action) {
+            return;
+        }
+        match action {
+            Action::OpenRoutes => self.navigate(Page::Routes, ctx),
+            Action::OpenSettings => self.navigate(Page::Settings, ctx),
+            _ => self.diagnostics.confirmation = Some(action),
+        }
     }
 
     fn diagnostic_controls(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, p: Palette) {
@@ -298,61 +353,6 @@ impl App {
         });
     }
 
-    fn diagnostic_row(
-        &mut self,
-        ui: &mut egui::Ui,
-        ctx: &egui::Context,
-        finding: &Finding,
-        index: usize,
-        p: Palette,
-        technical: bool,
-    ) {
-        ui.push_id(("diagnostic-row", technical, index, &finding.id), |ui| {
-            let title = if technical {
-                finding.title.as_str()
-            } else {
-                user_title(finding)
-            };
-            disclosure(ui, "finding", RichText::new(title).strong(), None, |ui| {
-                if !finding.detail.is_empty() {
-                    ui.label(&finding.detail);
-                }
-                if !finding.advice.is_empty() {
-                    ui.add_space(6.0);
-                    ui.label(RichText::new(&finding.advice).color(p.muted));
-                }
-                // Existing confirmed actions stay inside their finding;
-                // this presentation change adds no repair capability.
-                if let Some(action) = &finding.action {
-                    ui.add_space(8.0);
-                    if enabled_command(
-                        ui,
-                        self.diagnostics_action_available(action),
-                        action_label(action),
-                        ButtonTone::Secondary,
-                        Vec2::ZERO,
-                        p,
-                    )
-                    .clicked()
-                    {
-                        match action {
-                            Action::OpenRoutes => self.navigate(Page::Routes, ctx),
-                            Action::OpenSettings => self.navigate(Page::Settings, ctx),
-                            _ => self.diagnostics.confirmation = Some(action.clone()),
-                        }
-                    }
-                }
-            });
-            if !technical {
-                ui.label(
-                    RichText::new(user_hint(finding))
-                        .small()
-                        .color(status_color(finding.status, p)),
-                );
-            }
-        });
-    }
-
     pub(in crate::ui) fn information_page(
         &mut self,
         ui: &mut egui::Ui,
@@ -395,63 +395,303 @@ impl App {
                 }
                 if command(
                     ui,
-                    "Просмотреть отчёт…",
+                    "Отчёт для отправки…",
                     ButtonTone::Secondary,
                     Vec2::ZERO,
                     p,
                 )
                 .clicked()
-                    && let Some(report) = &self.diagnostics.report
                 {
-                    let mut text = report.sanitized_text();
-                    if self.diagnostics.stale {
-                        text.push_str("Результат устарел.\n");
-                    }
-                    self.diagnostics.export = Some(text);
+                    self.diagnostics.open_export();
                 }
                 ui.add_space(16.0);
                 let open = std::mem::take(&mut self.diagnostics.show_technical).then_some(true);
+                let mut next = None;
                 disclosure(
                     ui,
                     "technical-evidence",
-                    heading("Технические сведения", 18.0),
+                    heading("Детали проверки", 18.0),
                     open,
                     |ui| {
-                        if let Some(report) = self.diagnostics.report.clone() {
-                            for (index, finding) in report.findings.iter().enumerate() {
-                                ui.label(
-                                    RichText::new(status_label(finding.status))
-                                        .small()
-                                        .color(status_color(finding.status, p)),
+                        ui.add_space(8.0);
+                        ui.horizontal_wrapped(|ui| {
+                            for stage in Stage::ALL {
+                                ui.selectable_value(
+                                    &mut self.diagnostics.evidence_stage,
+                                    stage,
+                                    stage.title(),
                                 );
-                                self.diagnostic_row(ui, ctx, finding, index, p, true);
+                            }
+                        });
+                        ui.add_space(10.0);
+                        let stage = self.diagnostics.evidence_stage;
+                        let report = self
+                            .diagnostics
+                            .report
+                            .as_ref()
+                            .expect("information has report");
+                        let mut empty = true;
+                        for f in report
+                            .findings
+                            .iter()
+                            .filter(|f| Stage::for_id(&f.id) == stage)
+                        {
+                            if !empty {
+                                ui.add_space(8.0);
+                                ui.separator();
                                 ui.add_space(8.0);
                             }
+                            empty = false;
+                            ui.label(RichText::new(&f.title).strong());
+                            ui.label(
+                                RichText::new(status_label(f.status))
+                                    .small()
+                                    .color(status_color(f.status, p)),
+                            );
+                            if !f.detail.is_empty() {
+                                ui.label(RichText::new(&f.detail).color(p.muted));
+                            }
+                            if needs_attention(f) && !f.advice.is_empty() {
+                                ui.label(&f.advice);
+                            }
+                            if needs_attention(f)
+                                && let Some(action) = &f.action
+                                && enabled_command(
+                                    ui,
+                                    self.diagnostics_action_available(action),
+                                    action_label(action),
+                                    ButtonTone::Secondary,
+                                    Vec2::ZERO,
+                                    p,
+                                )
+                                .clicked()
+                            {
+                                next = Some(action.clone());
+                            }
+                        }
+                        if empty {
+                            ui.label(
+                                RichText::new("Для этого раздела нет результатов.").color(p.muted),
+                            );
                         }
                     },
                 );
+                if let Some(action) = next {
+                    self.diagnostic_action(action, ctx);
+                }
             });
     }
 }
 
-fn user_title(finding: &Finding) -> &str {
-    match finding.id.as_str() {
-        "nm_dns" | "resolver" | "dns_route" => "Проверьте настройки DNS",
-        "uplink" | "routes4" | "routes6" => "Проверьте подключение к сети",
-        "settings_file" => "Не удалось проверить настройки Eivro",
-        "firewall" => "Нужна проверка сетевого фильтра",
-        "endpoint_route" | "target_route" | "policy" => "Нужна проверка маршрута",
-        "dns_probe" => "Не удалось получить адрес сайта",
-        "core" | "xray" | "helper" => "Проверьте компоненты Eivro",
-        _ => &finding.title,
+/// The main path is a summary of independent observations, not a causal trace.
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+pub(super) enum Stage {
+    #[default]
+    Device,
+    Client,
+    Site,
+}
+impl Stage {
+    const ALL: [Self; 3] = [Self::Device, Self::Client, Self::Site];
+    fn title(self) -> &'static str {
+        match self {
+            Self::Device => "Устройство",
+            Self::Client => "Eivro",
+            Self::Site => "Сайт",
+        }
+    }
+    fn for_id(id: &str) -> Self {
+        match id {
+            "https" | "direct" | "dns_probe" | "target_route" | "rule" | "scope" => Self::Site,
+            "core" | "xray" | "helper" | "profile" | "exit" | "settings_file" | "subscription"
+            | "proxy_port" | "system_proxy" | "tun" | "fakeip" | "endpoint" | "endpoint_route" => {
+                Self::Client
+            }
+            _ => Self::Device,
+        }
+    }
+    fn result(self, report: &Report, network: bool) -> (Status, &'static str) {
+        let rows = || {
+            report
+                .findings
+                .iter()
+                .filter(|f| Self::for_id(&f.id) == self)
+        };
+        if rows().any(|f| f.status == Status::Error) {
+            return (Status::Error, "Есть проблема");
+        }
+        if rows().any(|f| f.status == Status::Warning) {
+            return (Status::Warning, "Есть замечание");
+        }
+        if self == Self::Site {
+            if !network {
+                return (Status::Unknown, "Без запроса");
+            }
+            if rows()
+                .any(|f| matches!(f.id.as_str(), "direct" | "https") && f.status == Status::Unknown)
+                || report
+                    .findings
+                    .iter()
+                    .any(|f| f.id == "state" && f.status == Status::Unknown)
+            {
+                return (Status::Unknown, "Неполный результат");
+            }
+            if rows().any(|f| f.id == "https" && f.status == Status::Pass) {
+                return (Status::Pass, "Получен ответ");
+            }
+            return (Status::Unknown, "Нет ответа проверки");
+        }
+        if rows().any(|f| f.status == Status::Pass) {
+            (Status::Pass, "Есть данные")
+        } else {
+            (Status::Unknown, "Нет данных")
+        }
     }
 }
 
-fn user_hint(finding: &Finding) -> &'static str {
-    match finding.status {
-        Status::Error => "Ошибка",
-        Status::Warning => "Рекомендация",
-        _ => "Можно повторить проверку",
+fn primary_finding(report: &Report) -> Option<&Finding> {
+    report
+        .findings
+        .iter()
+        .filter(|f| needs_attention(f))
+        .min_by_key(|f| {
+            let impact = match f.status {
+                Status::Error => 0,
+                Status::Warning => 1,
+                _ => 2,
+            };
+            // Prefer an actionable observation over a later symptom of the same issue.
+            (
+                impact,
+                f.action.is_none(),
+                matches!(f.id.as_str(), "https" | "direct"),
+            )
+        })
+}
+
+fn next_step(f: &Finding) -> (&str, &str) {
+    match (&f.action, f.id.as_str()) {
+        (Some(Action::RestoreDns { .. }), _) => (
+            "У сети не указан DNS",
+            "Можно вернуть адреса из сохранённых настроек сети.",
+        ),
+        (Some(Action::RecoverProxy), _) => (
+            "В системе остались настройки прокси",
+            "Проверьте параметры, оставшиеся от предыдущего сеанса Eivro.",
+        ),
+        (Some(Action::Reconnect), _) => (
+            "Проверьте подключение Eivro",
+            "Сеанс можно запустить заново и повторить проверку.",
+        ),
+        (_, "exit") => (
+            "Проверьте сеть, выбранную в правилах",
+            "Подключите нужную сеть или выберите другой выход для этого правила.",
+        ),
+        (_, "uplink" | "routes4") => (
+            "Проверьте подключение устройства",
+            "Проверьте Wi-Fi, кабель и другие запущенные VPN.",
+        ),
+        (_, "resolver" | "nm_dns" | "dns_route" | "dns_probe") => (
+            "Проверьте, как устройство находит сайты",
+            "Откройте настройки DNS активной сети и повторите проверку.",
+        ),
+        (_, "profile" | "subscription") => (
+            "Проверьте выбранный сервер",
+            "Посмотрите данные подписки и выберите доступный сервер.",
+        ),
+        (_, "core" | "xray" | "helper") => (
+            "Проверьте установку Eivro",
+            "Проверьте, установлены ли приложение и его компоненты из одной сборки.",
+        ),
+        (_, "https" | "direct") if f.status == Status::Unknown => (
+            "Попробуйте ещё раз",
+            "Для выбранного пути пока недостаточно данных.",
+        ),
+        (_, "https" | "direct") => ("Ответ сайта требует внимания", &f.detail),
+        (_, "policy" | "target_route" | "rule" | "endpoint_route") => (
+            "Проверьте правила подключения",
+            "Убедитесь, что для нужного адреса выбран доступный выход.",
+        ),
+        (_, "routes6") => (
+            "Проверьте дополнительный сетевой маршрут",
+            "Подробности доступны в разделе устройства.",
+        ),
+        _ => (&f.title, &f.advice),
+    }
+}
+
+// The export preview only derives from the already sanitized, immutable text.
+// Present it as a reproducible document. Never substitute local report evidence.
+pub(super) fn export_preview(ui: &mut egui::Ui, text: &str, p: Palette) {
+    egui::Frame::new()
+        .fill(p.raised)
+        .corner_radius(10)
+        .inner_margin(14)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            for line in text.lines() {
+                match line {
+                    "" => ui.add_space(8.0),
+                    "Ошибка" | "Внимание" | "В порядке" | "Справочно" =>
+                    {
+                        let color = match line {
+                            "Ошибка" => p.error,
+                            "Внимание" => status_color(Status::Warning, p),
+                            "В порядке" => p.accent,
+                            _ => p.muted,
+                        };
+                        ui.label(RichText::new(line).strong().color(color));
+                    }
+                    _ => {
+                        ui.label(line);
+                    }
+                }
+            }
+        });
+}
+
+fn stage_path(ui: &mut egui::Ui, report: &Report, network: bool, p: Palette) {
+    let wide = ui.available_width() >= 370.0;
+    let stage = |ui: &mut egui::Ui, group: Stage, last: bool| {
+        let (status, label) = group.result(report, network);
+        let color = status_color(status, p);
+        ui.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(Vec2::splat(16.0), egui::Sense::hover());
+            let dot = rect.center();
+            ui.painter()
+                .circle_stroke(dot, 6.0, Stroke::new(1.5_f32, color));
+            if status == Status::Pass {
+                ui.painter().circle_filled(dot, 3.0, color);
+            }
+            ui.label(RichText::new(group.title()).strong());
+            if wide && !last && ui.available_width() > 8.0 {
+                let (rect, _) = ui.allocate_exact_size(
+                    Vec2::new(ui.available_width() - 4.0, 14.0),
+                    egui::Sense::hover(),
+                );
+                ui.painter().line_segment(
+                    [rect.left_center(), rect.right_center()],
+                    Stroke::new(1.0_f32, p.line),
+                );
+            }
+            if !wide {
+                ui.label(RichText::new(label).small().color(color));
+            }
+        });
+        if wide {
+            ui.label(RichText::new(label).small().color(color));
+        }
+    };
+    if wide {
+        ui.columns(3, |columns| {
+            for (i, (ui, group)) in columns.iter_mut().zip(Stage::ALL).enumerate() {
+                stage(ui, group, i == 2);
+            }
+        });
+    } else {
+        for group in Stage::ALL {
+            stage(ui, group, true);
+        }
     }
 }
 
@@ -497,7 +737,7 @@ mod tests {
             ],
             ..Default::default()
         });
-        assert_eq!(summary(&state).0, "Соединение работает");
+        assert_eq!(summary(&state).0, "Сайт отвечает");
         // The time budget can run out after the proxy responds but before
         // the system TUN probe starts, leaving no second HTTPS finding.
         state
