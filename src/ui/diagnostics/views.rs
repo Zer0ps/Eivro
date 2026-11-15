@@ -90,6 +90,16 @@ pub(super) fn summary(state: &State) -> (String, String, Status) {
                 "Получен ответ по защищённому соединению.",
                 Status::Pass,
             )
+        } else if report
+            .findings
+            .iter()
+            .any(|f| f.id == "state" && f.status == Status::Unknown)
+        {
+            (
+                "Не удалось завершить проверку",
+                "Повторите проверку.",
+                Status::Unknown,
+            )
         } else if report.findings.iter().any(|f| f.status == Status::Pass) {
             (
                 "Проверка завершена",
@@ -775,6 +785,33 @@ mod tests {
         });
         assert_eq!(summary(&state).0, "Проверка завершена");
         assert!(summary(&state).1.contains("проверенных настройках"));
+    }
+
+    #[test]
+    fn local_timeout_supersedes_partial_success_but_optional_evidence_does_not() {
+        let mut state = State::default();
+        state.report = Some(Report {
+            findings: vec![
+                finding("resolver", Status::Pass),
+                finding("firewall", Status::Unknown),
+            ],
+            ..Default::default()
+        });
+        assert_eq!(summary(&state).0, "Проверка завершена");
+        state
+            .report
+            .as_mut()
+            .unwrap()
+            .findings
+            .push(finding("state", Status::Unknown));
+        assert_eq!(
+            summary(&state),
+            (
+                "Не удалось завершить проверку".into(),
+                "Повторите проверку.".into(),
+                Status::Unknown
+            )
+        );
     }
 
     #[test]
