@@ -1,4 +1,4 @@
-use super::design::{ButtonTone, command, heading, icon, mix};
+use super::design::{ButtonTone, command, heading, hover_progress, icon, mix};
 use super::*;
 
 impl App {
@@ -39,11 +39,7 @@ impl App {
                 .fill(Color32::TRANSPARENT)
                 .stroke(Stroke::NONE),
         );
-        let hover = ctx.animate_bool_with_time(
-            response.id.with("nav-hover"),
-            response.hovered(),
-            ui.style().animation_time.min(0.14),
-        );
+        let hover = hover_progress(ui, response.id.with("nav-hover"), response.hovered(), 0.14);
         ui.painter().set(
             fill,
             egui::epaint::RectShape::filled(
@@ -118,6 +114,12 @@ impl App {
         ui.add_space(3.0);
     }
     pub(super) fn shell(&mut self, ctx: &egui::Context, p: Palette) {
+        // DX12 already clears the entire backbuffer to the theme's panel colour.
+        let shell_fill = if cfg!(windows) {
+            Color32::TRANSPARENT
+        } else {
+            p.bg
+        };
         let narrow = ctx.content_rect().width() < 780.0;
         if (self.navigation_overlay || ctx.memory(|m| m.top_modal_layer().is_none()))
             && ctx.input_mut(|i| {
@@ -141,7 +143,7 @@ impl App {
             .exact_height(64.0)
             .frame(
                 egui::Frame::new()
-                    .fill(p.bg)
+                    .fill(shell_fill)
                     .inner_margin(egui::Margin::symmetric(16, 10)),
             )
             .show(ctx, |ui| {
@@ -229,7 +231,7 @@ impl App {
             egui::SidePanel::left("navigation")
                 .resizable(false)
                 .exact_width(190.0 * expanded)
-                .frame(egui::Frame::new().fill(p.bg))
+                .frame(egui::Frame::new().fill(shell_fill))
                 .show(ctx, |ui| {
                     let clip = ui.max_rect();
                     let min = clip.min + Vec2::new(12.0 - (1.0 - expanded) * 24.0, 24.0);
@@ -259,7 +261,7 @@ impl App {
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
-                    .fill(p.bg)
+                    .fill(shell_fill)
                     .inner_margin(egui::Margin::symmetric(if narrow { 18 } else { 28 }, 22)),
             )
             .show(ctx, |ui| {

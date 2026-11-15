@@ -53,6 +53,11 @@ pub struct WgpuWinitApp<'app> {
 struct WgpuWinitRunning<'app> {
     integration: EpiIntegration,
 
+    #[cfg(all(windows, feature = "eivro-windows-ui"))]
+    root_frame: Option<super::software_frame::FrameCache>,
+    #[cfg(all(windows, feature = "eivro-windows-ui"))]
+    surface_error: Arc<std::sync::atomic::AtomicBool>,
+
     /// The users application.
     app: Box<dyn 'app + App>,
 
@@ -75,6 +80,28 @@ pub struct SharedState {
 }
 
 pub type Viewports = egui::OrderedViewportIdMap<Viewport>;
+
+#[cfg(all(windows, feature = "eivro-windows-ui"))]
+#[allow(unsafe_code)]
+fn client_needs_paint(window: &Window) -> bool {
+    let Ok(handle) = window.window_handle() else {
+        return true;
+    };
+    let raw_window_handle::RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        return true;
+    };
+    // Unlike winit's internal redraw, a damaged Win32 client must be presented
+    // even when egui produced precisely the same geometry. Do not validate it here.
+    // SAFETY: HWND is borrowed from the live window on its UI thread; the
+    // optional output pointer is null and this read does not erase the region.
+    unsafe {
+        windows_sys::Win32::Graphics::Gdi::GetUpdateRect(
+            handle.hwnd.get() as _,
+            std::ptr::null_mut(),
+            0,
+        ) != 0
+    }
+}
 
 pub struct Viewport {
     ids: ViewportIdPair,
@@ -184,9 +211,25 @@ impl<'app> WgpuWinitApp<'app> {
         builder: ViewportBuilder,
     ) -> crate::Result<&mut WgpuWinitRunning<'app>> {
         profiling::function_scope!();
+        let configuration = self.native_options.wgpu_options.clone();
+        #[cfg(all(windows, feature = "eivro-windows-ui"))]
+        let (configuration, surface_error) = {
+            // Eivro uses absolute window input for all widgets and drags.
+            // Raw device mouse events would also schedule repaints outside the client.
+            event_loop.listen_device_events(winit::event_loop::DeviceEvents::Never);
+            let mut configuration = configuration;
+            let error = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let flag = error.clone();
+            let original = configuration.on_surface_error;
+            configuration.on_surface_error = Arc::new(move |err| {
+                flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                original(err)
+            });
+            (configuration, error)
+        };
         let mut painter = pollster::block_on(egui_wgpu::winit::Painter::new(
             egui_ctx.clone(),
-            self.native_options.wgpu_options.clone(),
+            configuration,
             self.native_options.viewport.transparent.unwrap_or(false),
             egui_wgpu::RendererOptions {
                 msaa_samples: self.native_options.multisampling as _,
@@ -223,6 +266,11 @@ impl<'app> WgpuWinitApp<'app> {
         }
 
         let wgpu_render_state = painter.render_state();
+        #[cfg(all(windows, feature = "eivro-windows-ui"))]
+        let root_frame = wgpu_render_state.as_ref().and_then(|state| {
+            (state.adapter.get_info().device_type == wgpu::DeviceType::Cpu)
+                .then(super::software_frame::FrameCache::default)
+        });
 
         let integration = EpiIntegration::new(
             egui_ctx.clone(),
@@ -335,6 +383,10 @@ impl<'app> WgpuWinitApp<'app> {
 
         Ok(self.running.insert(WgpuWinitRunning {
             integration,
+            #[cfg(all(windows, feature = "eivro-windows-ui"))]
+            root_frame,
+            #[cfg(all(windows, feature = "eivro-windows-ui"))]
+            surface_error,
             app,
             shared,
         }))
@@ -559,6 +611,7 @@ impl WgpuWinitRunning<'_> {
             app,
             integration,
             shared,
+            ..
         } = self;
 
         let mut frame_timer = crate::stopwatch::Stopwatch::new();
@@ -635,6 +688,14 @@ impl WgpuWinitRunning<'_> {
 
         // Runs the update, which could call immediate viewports,
         // so make sure we hold no locks here!
+        #[cfg(all(windows, feature = "eivro-windows-ui"))]
+        let pointer_pass = raw_input.events.iter().all(|e| {
+            matches!(
+                e,
+                egui::Event::PointerMoved(_) | egui::Event::PointerButton { .. }
+            )
+        }) && (!raw_input.events.is_empty()
+            || self.root_frame.as_ref().is_some_and(|c| c.active()));
         let full_output = integration.update(app.as_mut(), viewport_ui_cb.as_deref(), raw_input);
 
         // ------------------------------------------------------------
@@ -676,8 +737,6 @@ impl WgpuWinitRunning<'_> {
 
         egui_winit.handle_platform_output(window, platform_output);
 
-        let clipped_primitives = egui_ctx.tessellate(shapes, pixels_per_point);
-
         let mut screenshot_commands = vec![];
         viewport.actions_requested.retain(|cmd| {
             if let ActionRequested::Screenshot(info) = cmd {
@@ -687,14 +746,46 @@ impl WgpuWinitRunning<'_> {
                 true
             }
         });
-        let vsync_secs = painter.paint_and_update_textures(
-            viewport_id,
-            pixels_per_point,
-            app.clear_color(&egui_ctx.style().visuals),
-            &clipped_primitives,
-            &textures_delta,
-            screenshot_commands,
-        );
+        let clear = app.clear_color(&egui_ctx.style().visuals);
+        #[cfg(all(windows, feature = "eivro-windows-ui"))]
+        let unchanged = viewport_id == ViewportId::ROOT
+            && self.root_frame.as_mut().is_some_and(|cache| {
+                let surface_failed = self
+                    .surface_error
+                    .swap(false, std::sync::atomic::Ordering::Relaxed);
+                let eligible = pointer_pass
+                    && !surface_failed
+                    && textures_delta.is_empty()
+                    && screenshot_commands.is_empty()
+                    && viewport_output[&viewport_id].commands.is_empty()
+                    && viewport.info.minimized != Some(true)
+                    && window.is_visible() == Some(true)
+                    && !client_needs_paint(window);
+                cache.unchanged(
+                    eligible,
+                    super::software_frame::Surface {
+                        size: window.inner_size().into(),
+                        scale: pixels_per_point,
+                        clear,
+                    },
+                    &shapes,
+                )
+            });
+        #[cfg(not(all(windows, feature = "eivro-windows-ui")))]
+        let unchanged = false;
+        let vsync_secs = if unchanged {
+            0.
+        } else {
+            let clipped_primitives = egui_ctx.tessellate(shapes, pixels_per_point);
+            painter.paint_and_update_textures(
+                viewport_id,
+                pixels_per_point,
+                clear,
+                &clipped_primitives,
+                &textures_delta,
+                screenshot_commands,
+            )
+        };
 
         for action in viewport.actions_requested.drain(..) {
             match action {
@@ -776,6 +867,17 @@ impl WgpuWinitRunning<'_> {
         let mut shared = shared.borrow_mut();
 
         let viewport_id = shared.viewport_from_window.get(&window_id).copied();
+        #[cfg(all(windows, feature = "eivro-windows-ui"))]
+        if viewport_id == Some(ViewportId::ROOT)
+            && !matches!(
+                event,
+                winit::event::WindowEvent::CursorMoved { .. }
+                    | winit::event::WindowEvent::MouseInput { .. }
+            )
+            && let Some(cache) = &mut self.root_frame
+        {
+            cache.clear();
+        }
 
         // On Windows, if a window is resized by the user, it should repaint synchronously, inside the
         // event handler. If this is not done, the compositor will assume that the window does not want

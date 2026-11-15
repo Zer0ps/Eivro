@@ -33,7 +33,7 @@ eframe = { version = "0.33", default-features = false, features = ["glow"], opti
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = "0.6"
 wgpu = { version = "27.0.1", default-features = false, features = ["dx12", "wgsl", "std"], optional = true }
-eframe = { version = "0.33", default-features = false, features = ["wgpu"], optional = true }
+eframe = { version = "0.33", default-features = false, features = ["wgpu", "eivro-windows-ui"], optional = true }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization",
     "Win32_Security_Cryptography", "Win32_Storage_FileSystem",
@@ -82,5 +82,5 @@ debug = 1
 winresource = "=0.1.34"
 
 [patch.crates-io]
-# Windows hidden-window/event-loop fixes; see vendor/eframe/EIVRO-PATCH.md.
+# Windows window and rendering fixes; see vendor/eframe/EIVRO-PATCH.md.
 eframe = { path = "vendor/eframe" }

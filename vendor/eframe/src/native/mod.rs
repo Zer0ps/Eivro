@@ -14,3 +14,6 @@ mod glow_integration;
 
 #[cfg(feature = "wgpu")]
 mod wgpu_integration;
+
+#[cfg(any(all(windows, feature = "eivro-windows-ui", feature = "wgpu"), test))]
+mod software_frame;

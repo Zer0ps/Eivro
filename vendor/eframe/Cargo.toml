@@ -54,6 +54,7 @@ targets = [
 
 [features]
 __screenshot = []
+eivro-windows-ui = ["windows-sys/Win32_Graphics_Gdi"]
 accesskit = [
     "egui/accesskit",
     "egui-winit/accesskit",

@@ -59,6 +59,25 @@ pub(super) enum ButtonTone {
     Segment(bool),
 }
 
+#[cfg(any(windows, test))]
+pub(super) fn use_immediate_hover(ctx: &egui::Context) {
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new("eivro-immediate-hover"), true));
+}
+
+pub(super) fn hover_progress(ui: &egui::Ui, id: egui::Id, hovered: bool, seconds: f32) -> f32 {
+    // Each intermediate colour on a software adapter costs a full CPU-rendered
+    // frame. Show the hover colour immediately; press and navigation still animate.
+    #[cfg(any(windows, test))]
+    if ui
+        .ctx()
+        .data(|data| data.get_temp::<bool>(egui::Id::new("eivro-immediate-hover")) == Some(true))
+    {
+        return if hovered { 1.0 } else { 0.0 };
+    }
+    ui.ctx()
+        .animate_bool_with_time(id, hovered, ui.style().animation_time.min(seconds))
+}
+
 /// Shared command geometry and finite hover/press transitions. The underlying
 /// egui button retains keyboard activation, focus and accessibility semantics.
 pub(super) fn command(
@@ -98,10 +117,11 @@ pub(super) fn command(
         ui.add(button)
     };
     let duration = ui.style().animation_time;
-    let hover = ui.ctx().animate_bool_with_time(
+    let hover = hover_progress(
+        ui,
         response.id.with("button-hover"),
         response.enabled() && (response.hovered() || response.has_focus()),
-        duration.min(0.14),
+        0.14,
     );
     let keyboard_press = response.has_focus()
         && ui.input(|i| i.key_down(egui::Key::Space) || i.key_down(egui::Key::Enter));
@@ -492,6 +512,28 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn software_hover_reaches_each_target_in_the_first_frame() {
+        let ctx = egui::Context::default();
+        use_immediate_hover(&ctx);
+        let id = egui::Id::new("hover-test");
+        for (tick, hovered) in [false, true, true, false, true].into_iter().enumerate() {
+            let input = egui::RawInput {
+                time: Some(tick as f64 / 60.0),
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.style_mut().animation_time = 0.16;
+                    assert_eq!(
+                        hover_progress(ui, id, hovered, 0.14),
+                        u8::from(hovered) as f32
+                    );
+                });
+            });
+        }
+    }
+
     #[test]
     fn older_interface_snapshot_cannot_override_notifications_received_during_a_scan() {
         let mut app = App::model(Settings::default(), None, None);

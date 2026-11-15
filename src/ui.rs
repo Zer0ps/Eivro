@@ -147,6 +147,14 @@ impl App {
         );
         style.animation_time = 0.0;
         cc.egui_ctx.set_style(style);
+        #[cfg(windows)]
+        if cc
+            .wgpu_render_state
+            .as_ref()
+            .is_some_and(|gpu| gpu.adapter.get_info().device_type == eframe::wgpu::DeviceType::Cpu)
+        {
+            design::use_immediate_hover(&cc.egui_ctx);
+        }
         crate::emoji::install(&cc.egui_ctx);
         app.window_hiding = window_hiding;
         #[cfg(feature = "qa")]
@@ -794,6 +802,11 @@ fn contrast(c: Color32) -> Color32 {
 }
 
 impl eframe::App for App {
+    #[cfg(windows)]
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        visuals.panel_fill.to_normalized_gamma_f32()
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         #[cfg(windows)]
         if self.native_theme != Some(self.settings.theme) {

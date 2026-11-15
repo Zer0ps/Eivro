@@ -1,5 +1,5 @@
 use super::design::{ButtonTone, command, enabled_command};
-use super::design::{heading, label, mix};
+use super::design::{heading, hover_progress, label, mix};
 use super::*;
 use eivro::{
     network::{Connection, Dns, Interface},
@@ -175,10 +175,11 @@ fn rule_row(
                         ),
                     )
                 });
-                let hover = ui.ctx().animate_bool_with_time(
+                let hover = hover_progress(
+                    ui,
                     direction.id.with("hover"),
                     direction.hovered() || direction.has_focus(),
-                    ui.style().animation_time.min(0.14),
+                    0.14,
                 );
                 let press = ui.ctx().animate_bool_with_time(
                     direction.id.with("press"),
@@ -242,10 +243,11 @@ fn rule_row(
         *selected,
         duration.min(0.16),
     );
-    let hover = ui.ctx().animate_bool_with_time(
+    let hover = hover_progress(
+        ui,
         row.inner.select.id.with("row-hover"),
         row.inner.select.hovered() || row.inner.direction.hovered() || row.inner.enabled.hovered(),
-        duration.min(0.12),
+        0.12,
     );
     let changed = before != (rule.action, rule.enabled) || fresh;
     let press = ui.ctx().animate_bool_with_time(

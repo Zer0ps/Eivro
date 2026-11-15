@@ -1,4 +1,4 @@
-use super::design::{ButtonTone, command, heading};
+use super::design::{ButtonTone, command, heading, hover_progress};
 use super::*;
 
 // Scrolled-out rows keep a stable keyboard target and their share of the
@@ -27,10 +27,11 @@ fn server_button(
         return response;
     }
     let base = if selected { p.soft } else { p.card };
-    let hover = ui.ctx().animate_bool_with_time(
+    let hover = hover_progress(
+        ui,
         id.with("hover"),
         response.hovered() || response.has_focus(),
-        ui.style().animation_time.min(0.14),
+        0.14,
     );
     let pressed = response.is_pointer_button_down_on()
         || (response.has_focus()
@@ -598,6 +599,36 @@ mod drawer_tests {
         };
         app.settings.subscriptions.push(doc.into_subscription(1));
         app
+    }
+
+    #[test]
+    fn pointer_motion_over_blank_space_keeps_the_connection_scene_unchanged() {
+        use eframe::App as _;
+        let mut app = filled_app();
+        let ctx = egui::Context::default();
+        crate::emoji::install(&ctx);
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut previous = Vec::new();
+        for tick in 0..90 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(960.0, 760.0),
+                )),
+                time: Some(tick as f64 / 60.0),
+                events: vec![egui::Event::PointerMoved(egui::pos2(
+                    360.0 + tick as f32,
+                    744.0,
+                ))],
+                ..Default::default()
+            };
+            let output = ctx.run(input, |ctx| app.update(ctx, &mut frame));
+            if tick >= 30 {
+                assert!(output.textures_delta.is_empty());
+                assert!(output.shapes == previous, "scene changed on frame {tick}");
+            }
+            previous = output.shapes;
+        }
     }
 
     #[test]
