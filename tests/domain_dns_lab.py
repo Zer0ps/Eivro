@@ -353,6 +353,7 @@ def lab(original, policy):
             p.stdin.write(json.dumps(config).encode())
             p.stdin.close()
             deadline = time.monotonic() + 4
+            path = None
             while True:
                 if p.poll() is not None:
                     raise RuntimeError(p.stderr.read().decode())
@@ -360,22 +361,25 @@ def lab(original, policy):
                     try:
                         with socket.create_connection(
                             ("127.0.0.1", 12080), timeout=0.1
-                        ):
-                            break
-                    except OSError:
-                        assert time.monotonic() < deadline
-                        time.sleep(0.02)
-                    continue
-                if (
-                    subprocess.run(
-                        ["ip", "link", "show", "eivro0"], capture_output=True
-                    ).returncode
-                    == 0
-                ):
-                    break
-                assert time.monotonic() < deadline
+                        ) as client:
+                            client.sendall(b"\x05\x01\x00")
+                            if exact(client, 2) == b"\x05\x00":
+                                break
+                    except (OSError, RuntimeError):
+                        pass
+                else:
+                    # The interface can appear before its policy route is installed.
+                    # Check a separate address, then test each payload exactly once.
+                    lookup = subprocess.run(
+                        ["ip", "-j", "-4", "route", "get", "192.0.2.123",
+                         "ipproto", "tcp", "dport", "18080"],
+                        capture_output=True,
+                    )
+                    path = json.loads(lookup.stdout) if lookup.returncode == 0 else []
+                    if path and path[0].get("dev") == "eivro0":
+                        break
+                assert time.monotonic() < deadline, ("core startup timed out", path)
                 time.sleep(0.02)
-            time.sleep(0.15)
             return p
 
         def query(domain, kind=1):
