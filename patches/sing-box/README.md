@@ -1,17 +1,19 @@
-# Linux FakeIP allocation patch
+# Linux sing-box patches
 
 Base: official sing-box v1.14.4, commit
 `c005f35300ce76427dc285481ec5695f5b179cd2`.
-Output version: `1.14.4-eivro.2`. Native Linux x86_64 is the currently verified build.
+Output version: `1.14.4-eivro.3`. Native Linux x86_64 is the currently verified build.
 macOS/Windows continue using their pinned official binaries.
 
-`source.json` pins the upstream source archive, Go toolchain, build tags and patch
-SHA-256. `scripts/build-core.py` verifies these inputs, applies the patch to a fresh
+`source.json` pins the upstream source archive, Go toolchain, build tags and both
+patch digests. `scripts/build-core.py` verifies these inputs, applies the patches to a fresh
 source directory, runs the affected Go tests and builds without local VCS metadata.
 The default output is a candidate in `work/fakeip-core`; `--output vendor/sing-box`
 selects the core used by Linux packaging. Nothing is installed on the host.
 
-The patch changes two production files, adds two production files and three test files:
+### FakeIP allocation and retirement
+
+`fakeip-allocation.patch` changes the following behaviour.
 
 - Read the retained allocation cursor without deleting it. Missing or invalid
   metadata in a nonempty store, or changed address ranges, must fail startup.
@@ -40,6 +42,23 @@ the runtime regressions. Remove it only when the upstream implementation passes
 the same identity, crash, storage-failure and exhaustion checks. A successful patch
 application alone is insufficient. This patch does not claim to fix arbitrary
 database corruption or persistent DNS caches in third-party applications.
+
+### Process routing at TUN startup
+
+`linux-tun-process-owner.patch` covers the interval when Linux has assigned the
+TUN addresses but sing-box's asynchronous interface snapshot still omits them.
+The cached fast path handles the steady state. On a miss, the router consults the
+originating inbound. For an exact configured local TUN address the Linux inbound
+checks its current kernel-assigned interface addresses. An exact match allows the
+existing socket-owner lookup to run. Remote addresses, including neighbours
+inside the TUN prefix, do not trigger a kernel interface query. The kernel still
+has to identify the owning socket and process before an application rule matches.
+The fallback does not run for a TUN configured in a separate network namespace.
+
+The Go regressions exercise a stale snapshot, an unrelated inbound, changing
+address ownership, and IPv4/IPv6 address matching. The application network lab
+also checks the first local IP connection against an overlapping direct CIDR.
+Retire this patch when the corresponding upstream behaviour passes both tests.
 
 Upstream licensing remains applicable (`vendor/LICENSE`, shipped as
 `sing-box.LICENSE`). The source archive and this patch identify the changes;

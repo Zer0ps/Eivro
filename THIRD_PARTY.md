@@ -9,9 +9,9 @@
 
 - sing-box **1.14.4**, SagerNet / nekohasekai. Source tag:
   https://github.com/SagerNet/sing-box/tree/v1.14.4
-  macOS/Windows use pinned official archives. Linux builds **1.14.4-eivro.2**
-  from the same upstream commit with the FakeIP allocation patch in
-  `patches/sing-box`. Source, Go SDK and patch hashes are pinned in
+  macOS/Windows use pinned official archives. Linux builds **1.14.4-eivro.3**
+  from the same upstream commit with changes for FakeIP allocation and
+  process routing during TUN startup in `patches/sing-box`. Source, Go SDK and patch hashes are pinned in
   `patches/sing-box/source.json`; `scripts/build-core.py` reproduces the build.
   Upstream license and naming condition are reproduced in `vendor/LICENSE`
   and in every package as `sing-box.LICENSE`. Eivro is an independent project

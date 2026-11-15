@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the pinned Linux core and its reviewed FakeIP patch; no system installs."""
+"""Build the pinned Linux core with Eivro's reviewed Linux patches."""
 
 import argparse
 import hashlib
@@ -51,9 +51,13 @@ def main():
     arch = {"x86_64": "amd64", "aarch64": "arm64"}.get(platform.machine())
     if platform.system() != "Linux" or arch is None:
         raise SystemExit("Build natively on Linux x86_64 or arm64")
-    patch = ROOT / "patches/sing-box/fakeip-allocation.patch"
-    if digest(patch) != PIN["patch_sha256"]:
-        raise SystemExit("Patch checksum mismatch")
+    patches = [
+        (ROOT / "patches/sing-box/fakeip-allocation.patch", PIN["patch_sha256"]),
+        (ROOT / "patches/sing-box/linux-tun-process-owner.patch", PIN["process_patch_sha256"]),
+    ]
+    for patch, expected in patches:
+        if digest(patch) != expected:
+            raise SystemExit(f"Patch checksum mismatch: {patch.name}")
     work = args.work_dir.resolve()
     work.mkdir(parents=True, exist_ok=True)
     sdk = f"go{PIN['go_version']}.linux-{arch}.tar.gz"
@@ -106,11 +110,12 @@ def main():
                 "GOEXPERIMENT": "",
             }
         )
-        subprocess.run(
-            ["patch", "--batch", "--forward", "-p1", "-i", str(patch)],
-            cwd=source,
-            check=True,
-        )
+        for patch, _ in patches:
+            subprocess.run(
+                ["patch", "--batch", "--forward", "-p1", "-i", str(patch)],
+                cwd=source,
+                check=True,
+            )
         subprocess.run(
             [
                 go,
@@ -120,6 +125,8 @@ def main():
                 "-mod=readonly",
                 "./dns/transport/fakeip",
                 "./experimental/cachefile",
+                "./route",
+                "./protocol/tun",
             ],
             cwd=source,
             env=env,

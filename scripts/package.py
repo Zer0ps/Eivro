@@ -215,7 +215,7 @@ def main():
         copy(ROOT / name, stage / f"usr/share/doc/eivro/{name}", 0o644)
     for name in ("VERIFICATION.md", "DIAGNOSTICS.md", "NETWORK-EXITS.md", "DNS-ROUTING.md", "UPGRADE.md", "NAME.md", "REFERENCE.md", "DEVELOPMENT.md", "RELEASE.md", "MACOS.md"):
         copy(ROOT / "docs" / name, stage / "usr/share/doc/eivro/docs" / name, 0o644)
-    for name in ("README.md", "source.json", "fakeip-allocation.patch"):
+    for name in ("README.md", "source.json", "fakeip-allocation.patch", "linux-tun-process-owner.patch"):
         source = ROOT / "patches/sing-box" / name
         copy(source, portable / "patches/sing-box" / name, 0o644)
         copy(source, stage / "usr/share/doc/eivro/patches/sing-box" / name, 0o644)

@@ -1,0 +1,231 @@
+--- a/route/process_cache.go
++++ b/route/process_cache.go
+@@ -8,6 +8,7 @@
+ 
+ 	"github.com/sagernet/sing-box/adapter"
+ 	"github.com/sagernet/sing-box/common/process"
++	C "github.com/sagernet/sing-box/constant"
+ )
+ 
+ type processCacheKey struct {
+@@ -36,7 +37,7 @@
+ }
+ 
+ func (r *Router) searchProcessInfo(ctx context.Context, metadata *adapter.InboundContext) {
+-	if r.processSearcher == nil || metadata.ProcessInfo != nil || !r.isLocalSource(metadata.Source.Addr) {
++	if r.processSearcher == nil || metadata.ProcessInfo != nil || !r.isLocalSource(metadata) {
+ 		return
+ 	}
+ 	var originDestination netip.AddrPort
+@@ -74,7 +75,8 @@
+ 	}
+ }
+ 
+-func (r *Router) isLocalSource(source netip.Addr) bool {
++func (r *Router) isLocalSource(metadata *adapter.InboundContext) bool {
++	source := metadata.Source.Addr
+ 	if source.IsLoopback() {
+ 		return true
+ 	}
+@@ -90,5 +92,13 @@
+ 			}
+ 		}
+ 	}
++	// Link notifications can publish an older address snapshot after TUN startup.
++	// On a miss only the originating native TUN can supply fresh local evidence.
++	if metadata.InboundType == C.TypeTun {
++		inbound, _ := r.inbound.Get(metadata.Inbound)
++		if tun, ok := inbound.(interface{ HasAssignedLocalAddress(netip.Addr) bool }); ok {
++			return tun.HasAssignedLocalAddress(source)
++		}
++	}
+ 	return false
+ }
+--- /dev/null
++++ b/protocol/tun/eivro_local_source_linux.go
+@@ -0,0 +1,34 @@
++//go:build linux && !android
++
++package tun
++
++import (
++	"net"
++	"net/netip"
++	"slices"
++
++	"github.com/sagernet/sing/common/control"
++)
++
++// HasAssignedLocalAddress is the uncommon process-lookup path during TUN
++// reconfiguration. An address permits searching for the socket owner, never
++// attributing a packet to a process without that separate kernel lookup.
++func (t *Inbound) HasAssignedLocalAddress(source netip.Addr) bool {
++	if t.tunOptions.NetNs != "" || t.tunOptions.Name == "" || !source.IsValid() {
++		return false
++	}
++	configured := t.tunOptions.Inet6Address
++	if source.Is4() {
++		configured = t.tunOptions.Inet4Address
++	}
++	exact := func(prefix netip.Prefix) bool { return prefix.Addr() == source }
++	if !slices.ContainsFunc(configured, exact) {
++		return false
++	}
++	nic, err := net.InterfaceByName(t.tunOptions.Name)
++	if err != nil {
++		return false
++	}
++	current, err := control.InterfaceFromNet(*nic)
++	return err == nil && slices.ContainsFunc(current.Addresses, exact)
++}
+--- /dev/null
++++ b/protocol/tun/eivro_local_source_linux_test.go
+@@ -0,0 +1,70 @@
++//go:build linux && !android
++
++package tun
++
++import (
++	"net"
++	"net/netip"
++	"slices"
++	"testing"
++
++	T "github.com/sagernet/sing-tun"
++	"github.com/sagernet/sing/common/control"
++)
++
++func TestMissingSnapshotRequiresAssignedExactAddress(t *testing.T) {
++	lo, err := net.InterfaceByName("lo")
++	if err != nil {
++		t.Fatal(err)
++	}
++	info, err := control.InterfaceFromNet(*lo)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	if len(info.Addresses) == 0 {
++		t.Fatal("loopback has no assigned addresses")
++	}
++
++	// Use only existing local addresses. No link, route, socket or sysctl changes.
++	inbound := &Inbound{tunOptions: T.Options{Name: lo.Name}}
++	for _, prefix := range info.Addresses {
++		if prefix.Addr().Is4() {
++			inbound.tunOptions.Inet4Address = append(inbound.tunOptions.Inet4Address, prefix)
++		} else {
++			inbound.tunOptions.Inet6Address = append(inbound.tunOptions.Inet6Address, prefix)
++		}
++	}
++	for _, prefix := range info.Addresses {
++		if !inbound.HasAssignedLocalAddress(prefix.Addr()) {
++			t.Fatalf("missing assigned address %s", prefix.Addr())
++		}
++	}
++	for _, ip := range []string{"127.0.0.2", "2001:db8::77"} {
++		source := netip.MustParseAddr(ip)
++		for slices.ContainsFunc(info.Addresses, func(p netip.Prefix) bool { return p.Addr() == source }) {
++			source = source.Next()
++		}
++		if inbound.HasAssignedLocalAddress(source) {
++			t.Fatalf("accepted unassigned address %s", ip)
++		}
++		// Even an explicitly configured host must still be present on this link.
++		if source.Is4() {
++			inbound.tunOptions.Inet4Address = append(inbound.tunOptions.Inet4Address, netip.PrefixFrom(source, 8))
++		} else {
++			inbound.tunOptions.Inet6Address = append(inbound.tunOptions.Inet6Address, netip.PrefixFrom(source, 64))
++		}
++		if inbound.HasAssignedLocalAddress(source) {
++			t.Fatalf("trusted configuration alone: %s", ip)
++		}
++	}
++	inbound.tunOptions.NetNs = "other"
++	if inbound.HasAssignedLocalAddress(netip.MustParseAddr("127.0.0.1")) {
++		t.Fatal("consulted a different namespace")
++	}
++	inbound.tunOptions.NetNs = ""
++	inbound.tunOptions.Name = "eivro-missing-interface"
++	if inbound.HasAssignedLocalAddress(netip.MustParseAddr("127.0.0.1")) {
++		t.Fatal("accepted missing interface")
++	}
++}
+--- /dev/null
++++ b/route/eivro_local_source_linux_test.go
+@@ -0,0 +1,75 @@
++//go:build linux && !android
++
++package route
++
++import (
++	"net/netip"
++	"testing"
++
++	"github.com/sagernet/sing-box/adapter"
++	C "github.com/sagernet/sing-box/constant"
++	"github.com/sagernet/sing/common/control"
++	M "github.com/sagernet/sing/common/metadata"
++)
++
++type testSourceNetwork struct {
++	adapter.NetworkManager
++	finder control.InterfaceFinder
++}
++
++func (n testSourceNetwork) InterfaceFinder() control.InterfaceFinder { return n.finder }
++
++type testSourceTun struct {
++	adapter.Inbound
++	address netip.Addr
++	calls   int
++}
++
++func (t *testSourceTun) HasAssignedLocalAddress(addr netip.Addr) bool {
++	t.calls++
++	return addr == t.address
++}
++
++type testSourceInbounds struct {
++	adapter.InboundManager
++	tun *testSourceTun
++}
++
++func (m testSourceInbounds) Get(tag string) (adapter.Inbound, bool) {
++	if tag == "local-tun" {
++		return m.tun, true
++	}
++	return nil, false
++}
++
++func TestProcessSourceWhileTunnelAddressSnapshotIsStale(t *testing.T) {
++	finder := control.NewDefaultInterfaceFinder()
++	for _, host := range []string{"192.0.2.1", "2001:db8::1"} {
++		ip := netip.MustParseAddr(host)
++		tun := &testSourceTun{address: ip}
++		router := &Router{network: testSourceNetwork{finder: finder}, inbound: testSourceInbounds{tun: tun}}
++		metadata := &adapter.InboundContext{Source: M.Socksaddr{Addr: ip}, Inbound: "local-tun", InboundType: C.TypeTun}
++		finder.UpdateInterfaces([]control.Interface{{Addresses: []netip.Prefix{netip.PrefixFrom(ip, ip.BitLen())}}})
++		if !router.isLocalSource(metadata) || tun.calls != 0 {
++			t.Fatal("cached local address must use fast path")
++		}
++		finder.UpdateInterfaces(nil) // a delayed notification supersedes the good snapshot
++		if !router.isLocalSource(metadata) || tun.calls != 1 {
++			t.Fatal("first TUN flow lost local process lookup")
++		}
++		metadata.Source.Addr = ip.Next()
++		if router.isLocalSource(metadata) {
++			t.Fatal("accepted peer address")
++		}
++		metadata.Source.Addr = ip
++		metadata.Inbound = "other"
++		if router.isLocalSource(metadata) {
++			t.Fatal("borrowed evidence from another inbound")
++		}
++		metadata.Inbound = "local-tun"
++		metadata.InboundType = C.TypeMixed
++		if router.isLocalSource(metadata) || tun.calls != 2 {
++			t.Fatal("consulted TUN for mixed inbound")
++		}
++	}
++}

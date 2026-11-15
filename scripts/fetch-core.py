@@ -12,7 +12,7 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parent.parent
 VERSION = "1.14.4"
-EXPECTED_VERSION = "1.14.4-eivro.2" if platform.system() == "Linux" else VERSION
+EXPECTED_VERSION = "1.14.4-eivro.3" if platform.system() == "Linux" else VERSION
 ARCHES = {
     "x86_64": ("amd64", "699a1b510aa4396b2176d32d1181920399ebf1e267835da6f3b598d0f7c24968"),
     "aarch64": ("arm64", "436441f76ee2f7fe21b5b2d426d3cb261a480455a704865789ad533e4273ec26"),

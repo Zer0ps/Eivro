@@ -34,7 +34,7 @@ pub mod xray;
 
 pub type Result<T> = std::result::Result<T, String>;
 #[cfg(target_os = "linux")]
-pub const CORE_VERSION: &str = "1.14.4-eivro.2";
+pub const CORE_VERSION: &str = "1.14.4-eivro.3";
 pub const UPSTREAM_CORE_VERSION: &str = "1.14.4";
 #[cfg(not(target_os = "linux"))]
 pub const CORE_VERSION: &str = UPSTREAM_CORE_VERSION;

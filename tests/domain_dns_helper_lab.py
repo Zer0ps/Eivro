@@ -77,10 +77,12 @@ def dns(domain, resolver="192.0.2.53"):
     return socket.inet_ntoa(answer[-4:])
 
 
-def tcp(address, expected=b"DIRECT"):
-    with socket.create_connection((address, 18080), timeout=4) as s:
+def tcp(address, expected=b"DIRECT", port=18080):
+    with socket.create_connection((address, port), timeout=4) as s:
         s.sendall(b"opaque-helper-probe")
-        assert s.recv(64) == expected
+        with s.makefile("rb") as stream:
+            actual = stream.read(64)
+        assert actual == expected, (address, port, actual, expected)
 
 
 def wait_gone():
@@ -257,6 +259,34 @@ def test(original_net, original_mount):
             helper = start_helper()
             assert dns("plain.company.test", "10.50.0.53") == "198.51.100.99"
             baseline_network = network_snapshot()
+            app_rules = [
+                {
+                    "enabled": True,
+                    "target": {"kind": "application", "value": str(Path(sys.executable).resolve())},
+                    "action": "proxy",
+                },
+                {
+                    "enabled": True,
+                    "target": {"kind": "address", "value": "198.51.100.99/32"},
+                    "action": "direct",
+                },
+            ]
+            tcp("198.51.100.99", b"10.50.0.1", port=18084)
+            send(
+                helper,
+                {"command": "start", "request": dict(request, policies=app_rules)},
+                "READY",
+            )
+            # The first data connection after READY has no prior hostname or socket history.
+            tcp("198.51.100.99", b"198.51.100.99", port=18084)
+            other_peer = lab.probe_from_curl(18084)
+            assert other_peer == b"10.50.0.1", ("CIDR from curl", other_peer)
+            helper.stdin.close()
+            assert helper.wait(timeout=8) == 0
+            wait_gone()
+            assert_network_restored(baseline_network)
+            print("Cold application rule: Python via Shadowsocks, curl via direct CIDR", flush=True)
+            helper = start_helper()
             send(helper, {"command": "start", "request": request}, "READY")
             assert flushes() == 1, ("startup flush count", flushes())
             original = dns("plain.company.test")

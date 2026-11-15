@@ -1,4 +1,6 @@
-# Eivro 1.5.2
+# Eivro 1.5.3
+
+В Linux исправлена маршрутизация первого соединения при запуске TUN. Если правило приложения направляет трафик через VPN, а следующее правило для IP разрешает прямое соединение, первое соединение теперь также следует правилу приложения.
 
 Диагностика BETA показывает результат для выбранного сайта и предлагает следующий шаг. Технические сведения и предварительный просмотр обезличенного отчёта доступны в «Информации».
 
@@ -8,4 +10,4 @@
 
 Сборки доступны для Linux, Windows x64 и macOS 26 на Apple Silicon и Intel.
 
-[macOS](MACOS.md) · [Windows](WINDOWS.md) · [Обновление Linux](UPGRADE.md)
+[macOS](https://github.com/Zer0ps/Eivro/blob/v1.5.3/docs/MACOS.md) · [Windows](https://github.com/Zer0ps/Eivro/blob/v1.5.3/docs/WINDOWS.md) · [Обновление Linux](https://github.com/Zer0ps/Eivro/blob/v1.5.3/docs/UPGRADE.md)

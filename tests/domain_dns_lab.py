@@ -16,6 +16,15 @@ def run(*args):
     return r
 
 
+def probe_from_curl(port):
+    # Independent executable, same destination. The synthetic server returns a
+    # short marker without HTTP headers, which curl accepts with --http0.9.
+    return run(
+        "curl", "--disable", "--noproxy", "*", "--silent", "--show-error",
+        "--http0.9", "--max-time", "4", f"http://198.51.100.99:{port}/",
+    ).stdout
+
+
 def name(s):
     return b"".join(bytes([len(x)]) + x.encode() for x in s.split(".")) + b"\0"
 
@@ -160,6 +169,10 @@ def server(vpn_servers=False):
                     return
                 s.sendall(b"\5\0\0\1\0\0\0\0\0\0")
             s.recv(4096)
+            if s.getsockname()[1] == 18084:
+                # A real Shadowsocks egress connects from inside this namespace.
+                s.sendall(s.getpeername()[0].encode("ascii"))
+                return
             direct_reply = {
                 "198.51.100.96": b"UPDATED",
                 "198.51.100.95": b"SERVER-A",
@@ -192,6 +205,7 @@ def server(vpn_servers=False):
     for addr, port, proxy in (
         ("0.0.0.0", 18080, False),
         ("0.0.0.0", 18083, False),
+        ("198.51.100.99", 18084, False),
         ("10.50.0.53", 19081, True),
     ):
         threading.Thread(target=tcp, args=(addr, port, proxy), daemon=True).start()
@@ -444,6 +458,12 @@ def lab(original, policy):
             first_route = "PROXY" if mode in ("cidr", "application") else "DIRECT"
             domain_route = "PROXY" if mode == "application" else "DIRECT"
             observe("No observed DNS, IP only", connect("198.51.100.99"), "PROXY")
+            if mode == "application":
+                observe(
+                    "Same IP from another application",
+                    probe_from_curl(18080).decode(),
+                    "DIRECT",
+                )
             if mode.startswith("preset-"):
                 for host, expected in [
                     ("2gis.com", "DIRECT"),

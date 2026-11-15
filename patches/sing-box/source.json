@@ -1,10 +1,11 @@
 {
   "upstream_version": "1.14.4",
-  "version": "1.14.4-eivro.2",
+  "version": "1.14.4-eivro.3",
   "commit": "c005f35300ce76427dc285481ec5695f5b179cd2",
   "source_url": "https://codeload.github.com/SagerNet/sing-box/tar.gz/c005f35300ce76427dc285481ec5695f5b179cd2",
   "source_sha256": "1c4d2b3bf261a8d98e1b026be0bbcddbcb3f53bbca77eb15e8f25f7d4e602e59",
   "patch_sha256": "5a2f57ac23df38eaf663b6383f235de78d258e3a0a7e580f4ba9a5873340f902",
+  "process_patch_sha256": "1401febd92bd10f7c232aec8c3d0e852c46c9a25dda3ea6e576a0ee74ae38330",
   "go_version": "1.26.10",
   "go_linux_amd64_sha256": "ccfe7ae822d2c2f41f4fe7c956199967a4dac22d0ee0d2b2bfdb440aab3b20c5",
   "go_linux_arm64_sha256": "3f4227ce7b206a513e794f1393adb473a07b46e94d18bd15d1c684bbb7319797",

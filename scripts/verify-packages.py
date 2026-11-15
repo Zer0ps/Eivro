@@ -35,6 +35,13 @@ sources = {
 }
 hashes = {name: sha(path.read_bytes()) for name, path in sources.items()}
 checks = {'binary_sha256': hashes}
+pin = json.loads((ROOT / 'patches/sing-box/source.json').read_text())
+core_patches = {
+    'patches/sing-box/fakeip-allocation.patch': pin['patch_sha256'],
+    'patches/sing-box/linux-tun-process-owner.patch': pin['process_patch_sha256'],
+}
+for path, digest in core_patches.items():
+    assert sha((ROOT / path).read_bytes()) == digest, path
 legacy_launchers = ('usr/bin/velum', 'usr/libexec/velum/velum')
 launcher_bytes = b'#!/bin/sh\nexec /usr/libexec/eivro/eivro "$@"\n'
 
@@ -48,6 +55,8 @@ with tarfile.open(DIST / f'eivro-{VERSION}-linux-amd64.tar.gz') as archive:
     assert archive.getmember(prefix + 'Inter.LICENSE').isfile()
     assert archive.extractfile(prefix + 'ru-direct.LICENSE').read() == (ROOT/'assets/rules/ru-direct/LICENSE').read_bytes()
     assert archive.extractfile(prefix + 'ru-direct-source.json').read() == (ROOT/'assets/rules/ru-direct/source.json').read_bytes()
+    for path, digest in core_patches.items():
+        assert sha(archive.extractfile(prefix + path).read()) == digest, path
 checks['portable'] = 'PASS: release GUI/cores SHA256, root/0755, font license'
 
 deb = DIST / f'eivro_{PKGVERSION}_amd64.deb'
@@ -63,6 +72,8 @@ with tarfile.open(fileobj=io.BytesIO(run(['ar', 'p', deb, 'data.tar.gz']))) as a
     assert archive.getmember('usr/share/licenses/eivro/NotoEmoji.LICENSE').isfile()
     assert archive.getmember('usr/share/licenses/eivro/Inter.LICENSE').isfile()
     assert archive.extractfile('usr/share/doc/eivro/docs/DIAGNOSTICS.md').read() == (ROOT/'docs/DIAGNOSTICS.md').read_bytes()
+    for path, digest in core_patches.items():
+        assert sha(archive.extractfile('usr/share/doc/eivro/' + path).read()) == digest, path
     assert archive.extractfile('usr/share/licenses/eivro/ru-direct.LICENSE').read() == (ROOT/'assets/rules/ru-direct/LICENSE').read_bytes()
     for name in legacy_launchers:
         member = archive.getmember(name)
@@ -92,6 +103,8 @@ assert '/usr/share/licenses/eivro/NotoEmoji.LICENSE' in entries
 assert '/usr/share/licenses/eivro/Inter.LICENSE' in entries
 assert '/usr/share/licenses/eivro/ru-direct.LICENSE' in entries
 assert entries['/usr/share/doc/eivro/docs/DIAGNOSTICS.md'][-1] == sha((ROOT/'docs/DIAGNOSTICS.md').read_bytes())
+for path, digest in core_patches.items():
+    assert entries['/usr/share/doc/eivro/' + path][-1] == digest, path
 assert 'curl' in run(['rpm', '-qp', '--requires', rpm]).decode().splitlines()
 assert 'libxkbcommon-x11' in run(['rpm', '-qp', '--requires', rpm]).decode().splitlines()
 for name in legacy_launchers:
@@ -127,9 +140,7 @@ checks['maximum_required_glibc'] = max(versions, key=lambda v: tuple(map(int, v.
 checks['xray_version'] = run([sources['xray'], 'version']).decode().splitlines()[0]
 assert checks['xray_version'].startswith('Xray 26.10.21 ')
 checks['sing_box_version'] = run([sources['sing-box'], 'version']).decode().splitlines()[0]
-pin = json.loads((ROOT / 'patches/sing-box/source.json').read_text())
 assert checks['sing_box_version'] == 'sing-box version ' + pin['version']
-assert sha((ROOT / 'patches/sing-box/fakeip-allocation.patch').read_bytes()) == pin['patch_sha256']
 with tarfile.open(DIST / f'eivro-{VERSION}-source.tar.gz') as archive:
     names = archive.getnames()
     assert all(name.startswith(f'eivro-{VERSION}-source/') for name in names)
@@ -138,7 +149,7 @@ with tarfile.open(DIST / f'eivro-{VERSION}-source.tar.gz') as archive:
     assert archive.extractfile(f'eivro-{VERSION}-source/src/process.rs').read() == (ROOT / 'src/process.rs').read_bytes()
     assert archive.extractfile(f'eivro-{VERSION}-source/tests/connection.rs').read() == (ROOT / 'tests/connection.rs').read_bytes()
     assert archive.extractfile(f'eivro-{VERSION}-source/docs/VERIFICATION.md').read() == (ROOT / 'docs/VERIFICATION.md').read_bytes()
-    for name in ['.github/workflows/release.yml', 'scripts/verify-packages.py', 'src/resolver.rs', 'tests/resolver.rs', 'patches/sing-box/source.json', 'patches/sing-box/fakeip-allocation.patch', 'scripts/build-core.py', 'docs/DNS-ROUTING.md', 'src/diagnostics.rs', 'src/diagnostics/repair.rs', 'src/ui/diagnostics.rs', 'docs/DIAGNOSTICS.md']:
+    for name in ['.github/workflows/release.yml', 'scripts/verify-packages.py', 'src/resolver.rs', 'tests/resolver.rs', 'patches/sing-box/source.json', *core_patches, 'scripts/build-core.py', 'docs/DNS-ROUTING.md', 'src/diagnostics.rs', 'src/diagnostics/repair.rs', 'src/ui/diagnostics.rs', 'docs/DIAGNOSTICS.md']:
         assert archive.extractfile(f'eivro-{VERSION}-source/{name}').read() == (ROOT/name).read_bytes()
 checks['source'] = 'PASS: current version, supervisor/tests/docs match; no home/config/build directories'
 subprocess.run(['python3','scripts/update-ru-presets.py','--check'],cwd=ROOT,check=True)
