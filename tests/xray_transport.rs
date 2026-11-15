@@ -69,6 +69,7 @@ fn verify_version() {
 
 fn start(config: Value, reservation: TcpListener) -> Core {
     let port = reservation.local_addr().unwrap().port();
+    let socks_inbound = config["inbounds"][0]["protocol"] == "socks";
     drop(reservation);
     let mut core = Core(
         command()
@@ -83,7 +84,13 @@ fn start(config: Value, reservation: TcpListener) -> Core {
         .unwrap()
         .write_all(config.to_string().as_bytes())
         .unwrap();
-    wait_listener(&mut core, port);
+    if socks_inbound {
+        // The bridge must answer SOCKS negotiation before the transport test
+        // starts. A TCP handshake alone can succeed while Xray is starting.
+        process::ready(&mut core.0, port).expect("SOCKS bridge did not become ready");
+    } else {
+        wait_listener(&mut core, port);
+    }
     core
 }
 

@@ -466,5 +466,12 @@ mod tests {
                 .contains("сертификат")
         );
         assert!(classify(&output(7, "000"), true, false).1.contains("TCP"));
+        assert_eq!(
+            classify(&output(6, "000"), false, false),
+            (
+                Status::Error,
+                "По имени сайта не удалось найти его IP-адрес. Проверьте написание адреса."
+            )
+        );
     }
 }

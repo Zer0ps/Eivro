@@ -617,7 +617,12 @@ fn next_step(f: &Finding) -> (&str, &str) {
             "Попробуйте ещё раз",
             "Для выбранного пути пока недостаточно данных.",
         ),
-        (_, "https" | "direct") => ("Ответ сайта требует внимания", &f.detail),
+        (_, "https") if f.status == Status::Error => ("Не удалось открыть сайт", &f.detail),
+        (_, "direct") if f.status == Status::Error => {
+            ("Не удалось открыть сайт напрямую", &f.detail)
+        }
+        (_, "https") => ("Доступ к странице не подтверждён", &f.detail),
+        (_, "direct") => ("Прямой доступ к странице не подтверждён", &f.detail),
         (_, "policy" | "target_route" | "rule" | "endpoint_route") => (
             "Проверьте правила подключения",
             "Убедитесь, что для нужного адреса выбран доступный выход.",
@@ -734,6 +739,24 @@ mod tests {
         assert!(needs_attention(&finding("https", Status::Unknown)));
         assert!(needs_attention(&finding("resolver", Status::Error)));
         assert!(needs_attention(&finding("target_route", Status::Warning)));
+    }
+
+    #[test]
+    fn site_result_explains_which_path_failed_and_preserves_the_reason() {
+        for (id, status, title) in [
+            ("https", Status::Error, "Не удалось открыть сайт"),
+            ("direct", Status::Error, "Не удалось открыть сайт напрямую"),
+            ("https", Status::Warning, "Доступ к странице не подтверждён"),
+            (
+                "direct",
+                Status::Warning,
+                "Прямой доступ к странице не подтверждён",
+            ),
+        ] {
+            let mut result = finding(id, status);
+            result.detail = "Причина проверки".into();
+            assert_eq!(next_step(&result), (title, result.detail.as_str()));
+        }
     }
 
     #[test]
